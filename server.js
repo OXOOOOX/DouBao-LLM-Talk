@@ -337,26 +337,32 @@ wss.on('connection', (clientWs, req) => {
   const volcConnectId = url.searchParams.get('connect_id') || `${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;
 
   if (!volcAppKey || !volcAccessKey) {
-    console.error('[WebSocket] 缺少 ASR 鉴权');
-    clientWs.close(4001, 'Missing ASR auth');
+    console.error('[WebSocket] 缺少鉴权');
+    clientWs.close(4001, 'Missing auth');
     return;
   }
 
-  const asrUrl = `${VOLC_ASR_WS_URL}?connect_id=${encodeURIComponent(volcConnectId)}`;
+  // 判断是 ASR 还是 TTS 请求（通过 resource_id 判断）
+  const isTtsRequest = volcResourceId.includes('seed-tts') || volcResourceId.includes('tts');
+  const targetUrl = isTtsRequest
+    ? `${VOLC_TTS_WS_URL}?connect_id=${encodeURIComponent(volcConnectId)}`
+    : `${VOLC_ASR_WS_URL}?connect_id=${encodeURIComponent(volcConnectId)}`;
+
   const headers = buildVolcHeaders({
     appKey: volcAppKey,
     accessKey: volcAccessKey,
     resourceId: volcResourceId
   }, volcConnectId);
 
-  console.log(`[WebSocket] 连接到豆包 ASR: ${asrUrl}`);
+  const serviceName = isTtsRequest ? 'TTS' : 'ASR';
+  console.log(`[WebSocket] 连接到豆包 ${serviceName}: ${targetUrl}`);
 
-  upstreamWs = new WebSocket(asrUrl, { headers });
+  upstreamWs = new WebSocket(targetUrl, { headers });
 
   upstreamWs.binaryType = 'arraybuffer';
 
   upstreamWs.on('open', () => {
-    console.log(`[WebSocket] 豆包 ASR 已连接`);
+    console.log(`[WebSocket] 豆包 ${serviceName} 已连接`);
     // 发送缓冲的消息
     for (const msg of messageBuffer) {
       upstreamWs.send(msg);
@@ -371,11 +377,11 @@ wss.on('connection', (clientWs, req) => {
   });
 
   upstreamWs.on('error', (error) => {
-    console.error(`[WebSocket] 豆包 ASR 错误:`, error);
+    console.error(`[WebSocket] 豆包 ${serviceName} 错误:`, error);
   });
 
   upstreamWs.on('close', () => {
-    console.log(`[WebSocket] 豆包 ASR 连接关闭`);
+    console.log(`[WebSocket] 豆包 ${serviceName} 连接关闭`);
     if (clientWs.readyState === WebSocket.OPEN) {
       clientWs.close();
     }

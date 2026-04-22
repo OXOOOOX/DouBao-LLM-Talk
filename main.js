@@ -5,6 +5,7 @@
 
 import { DoubaoClient } from './doubao.js';
 import { QwenClient } from './qwen.js';
+import { TTSClient } from './tts.js';
 
 // ==================== 状态管理 ====================
 
@@ -32,6 +33,12 @@ const state = {
   // 客户端实例
   asrClient: null,
   qwenClient: null,
+  ttsClient: null,
+
+  // TTS 播放
+  audioPlayer: null,
+  audioQueue: [],
+  isPlaying: false,
 
   // 对话状态
   isProcessing: false,
@@ -380,6 +387,16 @@ function stopCurrentOutput() {
   state.isAwaitingFinalAsr = false;
   state.currentAssistantMessage = null;
   resetConversationTimers();
+
+  // 停止 TTS 播报
+  if (state.isPlaying || state.ttsClient) {
+    stopTTS();
+  }
+
+  // 停止 QWEN 流式输出
+  if (state.qwenClient) {
+    state.qwenClient.stop();
+  }
 }
 
 // ==================== ASR 处理 ====================
@@ -463,8 +480,9 @@ async function handleUserMessage(text) {
     state.conversationHistory.push({ role: 'assistant', content: fullResponse });
     state.currentAssistantMessage = null;
 
-    // TODO: 触发 TTS 播报
-    console.log('[Qwen] 回复完成:', fullResponse);
+    // 触发 TTS 播报
+    console.log('[Qwen] 回复完成，开始 TTS:', fullResponse);
+    await playTTS(fullResponse);
 
   } catch (error) {
     console.error('[Qwen] 错误:', error);
@@ -485,6 +503,168 @@ function floatToPCM16(float32Array) {
     int16Array[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
   }
   return int16Array;
+}
+
+// ==================== TTS 播放 ====================
+
+async function playTTS(text) {
+  if (!text || text.trim().length === 0) {
+    console.log('[TTS] 空文本，跳过播报');
+    return;
+  }
+
+  state.isPlaying = true;
+  state.timers.ttsStart = Date.now();
+
+  try {
+    // 创建 TTS 客户端
+    state.ttsClient = new TTSClient({
+      appKey: state.config.volcAppKey,
+      accessKey: state.config.volcAccessKey,
+      resourceId: state.config.volcTtsResourceId,
+      voiceType: state.config.volcTtsVoice,
+      proxyUrl: state.config.volcProxyUrl
+    });
+
+    // 创建音频播放器
+    state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    state.audioQueue = [];
+
+    state.ttsClient.onAudio = (audioData) => {
+      // 将音频数据加入队列
+      state.audioQueue.push(audioData);
+      playAudioQueue();
+    };
+
+    state.ttsClient.onError = (error) => {
+      console.error('[TTS] 错误:', error);
+      state.isPlaying = false;
+    };
+
+    state.ttsClient.onClose = () => {
+      console.log('[TTS] 连接关闭');
+      state.isPlaying = false;
+    };
+
+    // 连接 TTS
+    updateStatus('TTS 连接中...');
+    await state.ttsClient.connect();
+    updateStatus('TTS 播报中...');
+
+    // 分句发送文本（按标点符号分割）
+    const sentences = splitSentences(text);
+    console.log('[TTS] 分句:', sentences);
+
+    for (let i = 0; i < sentences.length; i++) {
+      const sentence = sentences[i];
+      const isLast = i === sentences.length - 1;
+
+      if (sentence.trim().length > 0) {
+        state.ttsClient.sendText(sentence, isLast);
+        // 每句之间稍微延迟
+        if (!isLast) {
+          await sleep(100);
+        }
+      }
+    }
+
+    // 等待播放完成
+    await waitForPlaybackComplete();
+
+    // 完成 session
+    state.ttsClient.finishSession();
+
+    state.timers.ttsComplete = Date.now();
+    setLatency('TTS 完成', Date.now() - state.timers.ttsStart);
+    console.log('[TTS] 播报完成');
+
+  } catch (error) {
+    console.error('[TTS] 播放错误:', error);
+    updateStatus('TTS 错误：' + error.message);
+  } finally {
+    state.isPlaying = false;
+    if (state.ttsClient) {
+      state.ttsClient.close();
+      state.ttsClient = null;
+    }
+    updateStatus('就绪');
+  }
+}
+
+function splitSentences(text) {
+  // 按中文和英文标点分割句子
+  const sentences = [];
+  let current = '';
+
+  for (const char of text) {
+    current += char;
+    if (/[。！？!?；;：:]/.test(char)) {
+      sentences.push(current.trim());
+      current = '';
+    }
+  }
+
+  if (current.trim().length > 0) {
+    sentences.push(current.trim());
+  }
+
+  return sentences;
+}
+
+function playAudioQueue() {
+  if (state.audioQueue.length === 0 || !state.audioContext) return;
+
+  const audioData = state.audioQueue.shift();
+
+  // 解码 MP3 数据
+  state.audioContext.decodeAudioData(audioData.slice(0), (audioBuffer) => {
+    const source = state.audioContext.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(state.audioContext.destination);
+    source.start(0);
+
+    source.onended = () => {
+      // 继续播放队列中的下一个
+      playAudioQueue();
+    };
+  }, (error) => {
+    console.error('[Audio] 解码失败:', error);
+    playAudioQueue();
+  });
+}
+
+async function waitForPlaybackComplete(timeout = 30000) {
+  const startTime = Date.now();
+  while (state.audioQueue.length > 0 || state.ttsClient?.isSessionActive) {
+    if (Date.now() - startTime > timeout) {
+      console.log('[TTS] 等待播放超时');
+      break;
+    }
+    await sleep(100);
+  }
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function stopTTS() {
+  console.log('[TTS] 停止播报');
+
+  // 取消当前 session
+  if (state.ttsClient) {
+    state.ttsClient.cancelSession();
+  }
+
+  // 清空音频队列
+  state.audioQueue = [];
+
+  // 停止音频播放
+  if (state.audioContext) {
+    state.audioContext.suspend();
+  }
+
+  state.isPlaying = false;
 }
 
 // ==================== 事件绑定 ====================
