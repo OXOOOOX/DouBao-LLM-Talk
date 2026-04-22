@@ -3,17 +3,23 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>豆包语音对话 - QWEN</title>
-  <link rel="stylesheet" href="/src/style.css">
+  <title>豆包语音对话</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <div class="container">
     <header>
       <div class="header-main">
-        <h1>豆包语音对话</h1>
-        <p class="subtitle">语音输入 → 豆包识别 → QWEN 回答 → TTS 播报</p>
+        <div class="header-logo"></div>
+        <div>
+          <h1>豆包语音对话</h1>
+          <p class="subtitle">语音输入 → 豆包识别 → QWEN 回答 → TTS 播报</p>
+        </div>
       </div>
-      <button id="settings-toggle-btn" class="btn btn-secondary settings-toggle" type="button" aria-expanded="false" aria-controls="settings-panel">
+      <button id="settings-toggle-btn" class="settings-toggle" type="button">
         <span>设置</span>
       </button>
     </header>
@@ -21,52 +27,51 @@
     <section id="settings-panel" class="panel settings-panel" hidden>
       <div class="settings-grid">
         <div class="settings-section">
-          <h2>大模型设置</h2>
-          <label class="model-picker">
+          <h2>🤖 大模型设置</h2>
+          <label class="input-group">
             <span>QWEN API Key</span>
-            <input id="settings-qwen-api-key" type="password" autocomplete="off">
+            <input id="settings-qwen-api-key" type="password" placeholder="sk-..." autocomplete="off">
           </label>
-          <label class="model-picker">
+          <label class="input-group">
             <span>默认模型</span>
-            <select id="settings-qwen-model" class="model-select">
-              <option value="qwen3.6-max-preview">qwen3.6-max-preview</option>
-              <option value="qwen3.6-plus">qwen3.6-plus</option>
-              <option value="qwen3.6-flash">qwen3.6-flash</option>
+            <select id="settings-qwen-model">
+              <option value="qwen-max">qwen-max</option>
+              <option value="qwen-plus">qwen-plus</option>
+              <option value="qwen-turbo">qwen-turbo</option>
             </select>
           </label>
         </div>
 
         <div class="settings-section">
-          <h2>豆包设置</h2>
-          <label class="model-picker">
-            <span>APP ID</span>
-            <input id="settings-volc-app-id" type="text" autocomplete="off">
+          <h2>🎤 豆包设置</h2>
+          <p class="settings-note">ASR 使用 X-Api-App-Key、X-Api-Access-Key 与 X-Api-Resource-Id；本地开发默认从 `.env.local` 读取，发布后可手动填写</p>
+          <label class="input-group">
+            <span>App Key</span>
+            <input id="settings-volc-app-key" type="password" autocomplete="off">
           </label>
-          <label class="model-picker">
-            <span>Access Token</span>
-            <input id="settings-volc-access-token" type="password" autocomplete="off">
+          <label class="input-group">
+            <span>Access Key</span>
+            <input id="settings-volc-access-key" type="password" autocomplete="off">
           </label>
-          <label class="model-picker">
-            <span>API Key</span>
+          <label class="input-group">
+            <span>TTS API Key</span>
             <input id="settings-volc-api-key" type="password" autocomplete="off">
           </label>
-          <label class="model-picker">
-            <span>ASR Resource ID</span>
-            <input id="settings-volc-resource-id" type="text" autocomplete="off">
-          </label>
-          <label class="model-picker">
-            <span>TTS Resource ID</span>
-            <input id="settings-volc-tts-resource-id" type="text" autocomplete="off">
-          </label>
-          <label class="model-picker">
-            <span>代理地址</span>
-            <input id="settings-volc-proxy-url" type="text" autocomplete="off">
+          <label class="input-group">
+            <span>TTS 音色</span>
+            <select id="settings-volc-tts-voice">
+              <option value="zh_female_vv_uranus_bigtts">温柔女声</option>
+              <option value="zh_female_cancan_mars_bigtts">灿灿女声</option>
+              <option value="zh_male_ahu_raphael_bigtts">阿虎男声</option>
+              <option value="zh_male_qingshu_raphael_bigtts">青叔男声</option>
+              <option value="zh_female_shuangkuaisisi_moon_bigtts">双快思思</option>
+            </select>
           </label>
         </div>
       </div>
 
       <div class="settings-actions">
-        <button id="settings-save-btn" class="btn btn-primary" type="button">
+        <button id="settings-save-btn" class="btn btn-primary">
           <span>保存设置</span>
         </button>
         <span id="settings-status" class="settings-status"></span>
@@ -74,17 +79,17 @@
     </section>
 
     <div class="controls panel">
-      <label class="model-picker">
-        <span>LLM 模型</span>
-        <select id="model-select" class="model-select">
-          <option value="qwen3.6-max-preview">qwen3.6-max-preview</option>
-          <option value="qwen3.6-plus">qwen3.6-plus</option>
-          <option value="qwen3.6-flash">qwen3.6-flash</option>
+      <label class="input-group">
+        <span>🤖 LLM 模型</span>
+        <select id="model-select">
+          <option value="qwen-max">qwen-max</option>
+          <option value="qwen-plus">qwen-plus</option>
+          <option value="qwen-turbo">qwen-turbo</option>
         </select>
       </label>
-      <label class="model-picker">
-        <span>豆包音色</span>
-        <select id="voice-select" class="model-select">
+      <label class="input-group">
+        <span>🎤 豆包音色</span>
+        <select id="voice-select">
           <option value="zh_female_vv_uranus_bigtts">温柔女声</option>
           <option value="zh_female_cancan_mars_bigtts">灿灿女声</option>
           <option value="zh_male_ahu_raphael_bigtts">阿虎男声</option>
@@ -93,13 +98,13 @@
         </select>
       </label>
       <button id="start-btn" class="btn btn-primary">
-        <span>开始录音</span>
+        <span>🎤 开始录音</span>
       </button>
       <button id="stop-btn" class="btn btn-danger" disabled>
-        <span>停止录音</span>
+        <span>⏹️ 停止录音</span>
       </button>
       <button id="clear-btn" class="btn btn-secondary">
-        <span>清空对话</span>
+        <span>🗑️ 清空对话</span>
       </button>
     </div>
 
@@ -115,6 +120,6 @@
     <div id="realtime-text" class="realtime-text panel"></div>
   </div>
 
-  <script type="module" src="/src/main.js"></script>
+  <script type="module" src="/main.js"></script>
 </body>
 </html>

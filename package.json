@@ -1,19 +1,19 @@
 {
-  "name": "dobao-qwen-talk",
-  "private": true,
-  "version": "0.0.1",
+  "name": "doubao-llm-talk",
+  "version": "1.0.0",
+  "description": "豆包语音对话应用 - 语音输入 → 豆包识别 → QWEN 回答 → TTS 播报",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "server": "node server.js"
-  },
-  "devDependencies": {
-    "vite": "^5.0.0"
+    "server": "node --watch server.js"
   },
   "dependencies": {
-    "uuid": "^9.0.0",
-    "ws": "^8.20.0"
+    "ws": "^8.18.0",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0"
   }
 }

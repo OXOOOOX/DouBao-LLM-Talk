@@ -40,66 +40,72 @@ header {
   background: var(--surface);
   border: 2px solid var(--line);
   border-radius: 0;
-  padding: 18px 20px;
+  padding: 14px 18px;
 }
 
 .header-main {
   min-width: 0;
   flex: 1;
-}
-
-.settings-toggle {
-  width: 52px;
-  height: 52px;
-  min-height: 52px;
-  flex: none;
-  padding: 0;
-}
-
-.settings-toggle span {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 12px;
 }
 
-.settings-toggle.btn {
-  width: 52px;
-}
-
-header::before {
-  content: "";
-  width: 44px;
-  height: 44px;
+.header-logo {
+  width: 36px;
+  height: 36px;
   flex: none;
   border: 2px solid var(--line);
   background: var(--accent);
 }
 
-header h1 {
-  font-size: 1.7rem;
+.header-main h1 {
+  font-size: 1.4rem;
   font-weight: 800;
   letter-spacing: -0.03em;
-  margin-bottom: 4px;
+  margin-bottom: 2px;
+  white-space: nowrap;
 }
 
 .subtitle {
   color: var(--muted);
-  font-size: 0.95rem;
+  font-size: 0.85rem;
   font-weight: 600;
+}
+
+.settings-toggle {
+  width: auto;
+  min-width: 60px;
+  height: 40px;
+  min-height: 40px;
+  flex: none;
+  padding: 0 14px;
+  font-size: 0.9rem;
+  font-weight: 700;
+  background: #ffffff;
+  border: 2px solid var(--line);
+  border-radius: 0;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.settings-toggle:hover:not(:disabled) {
+  background: #f3f3f3;
 }
 
 .panel {
   background: var(--panel);
   border: 2px solid var(--line);
   border-radius: 0;
-  padding: 16px;
-  margin: 16px 0;
+  padding: 14px;
+  margin: 14px 0;
 }
 
 .controls {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 12px;
+  gap: 10px;
   align-items: end;
 }
 
@@ -125,6 +131,14 @@ header h1 {
   font-weight: 800;
 }
 
+.settings-note {
+  font-size: 0.75rem;
+  color: var(--muted);
+  padding: 8px 12px;
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+}
+
 .settings-actions {
   display: flex;
   align-items: center;
@@ -148,29 +162,17 @@ header h1 {
   color: var(--danger);
 }
 
-.settings-panel input {
-  width: 100%;
-}
-
-.settings-panel[hidden] {
-  display: none;
-}
-
-input[type="password"] {
-  letter-spacing: 0.04em;
-}
-
-input[type="password"]::placeholder {
-  letter-spacing: normal;
-}
-
-.model-picker {
+.input-group {
   display: grid;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   font-weight: 700;
   color: var(--muted);
+}
+
+.input-group span {
+  font-weight: 700;
 }
 
 input,
@@ -181,16 +183,25 @@ button {
   border-radius: 0;
   background: var(--surface);
   color: var(--text);
-  padding: 12px 14px;
-  font-size: 0.95rem;
+  padding: 10px 12px;
+  font-size: 0.9rem;
   font-family: inherit;
 }
 
-.model-select {
+input[type="password"] {
+  letter-spacing: 0.04em;
+}
+
+input[type="password"]::placeholder {
+  letter-spacing: normal;
+}
+
+select {
   width: 100%;
   min-width: 0;
   background: #ffffff;
   font-weight: 600;
+  cursor: pointer;
 }
 
 button {
@@ -211,15 +222,11 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  min-height: 52px;
+  gap: 6px;
+  min-height: 44px;
   width: 100%;
   font-weight: 700;
-}
-
-.btn .icon {
-  display: inline-flex;
-  font-size: 1rem;
+  font-size: 0.9rem;
 }
 
 .btn-primary {
@@ -232,6 +239,13 @@ button:disabled {
 
 .btn-danger {
   background: #ffffff;
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: var(--danger);
+  color: #ffffff;
 }
 
 .btn-secondary {
@@ -239,8 +253,8 @@ button:disabled {
 }
 
 .chat-container {
-  min-height: 460px;
-  max-height: 58vh;
+  min-height: 400px;
+  max-height: 55vh;
   overflow-y: auto;
   background: #ffffff;
 }
@@ -252,12 +266,13 @@ button:disabled {
 }
 
 .message {
-  max-width: min(82%, 720px);
-  padding: 14px 16px;
+  max-width: min(80%, 680px);
+  padding: 12px 14px;
   border: 2px solid var(--line);
   border-radius: 0;
   line-height: 1.6;
   animation: fadeIn 0.2s ease;
+  font-size: 0.95rem;
 }
 
 .message.user {
@@ -305,10 +320,11 @@ button:disabled {
 }
 
 .realtime-text {
-  min-height: 86px;
+  min-height: 72px;
   background: #ffffff;
   line-height: 1.65;
   font-weight: 600;
+  font-size: 0.95rem;
 }
 
 .realtime-text:empty {
@@ -367,8 +383,7 @@ button:disabled {
     width: 100%;
   }
 
-  .settings-toggle,
-  .settings-toggle.btn {
+  .settings-toggle {
     width: 48px;
     height: 48px;
     min-height: 48px;
@@ -400,8 +415,8 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 
-  .model-picker,
-  .model-select,
+  .input-group,
+  select,
   .btn {
     width: 100%;
   }

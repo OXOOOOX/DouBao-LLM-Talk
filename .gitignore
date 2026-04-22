@@ -1,9 +1,9 @@
 node_modules/
 dist/
 .env
-.env.*
-!.env.example
-!.env.template
+.env.local
+.env.example
+.env.template
 .vscode/
 .idea/
 .DS_Store
@@ -11,3 +11,4 @@ Thumbs.db
 *.log
 coverage/
 .claude/
+*.pdf
