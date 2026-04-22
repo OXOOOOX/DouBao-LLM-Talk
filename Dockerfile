@@ -1,23 +1,3 @@
-# Build stage for Vite frontend
-FROM node:20-alpine AS builder
-
-WORKDIR /app
-
-# Copy package files
-COPY package*.json ./
-
-# Install all dependencies (including devDependencies for build)
-RUN npm ci
-
-# Copy source files
-COPY *.json *.js ./
-COPY src ./src
-COPY index.html ./
-
-# Build frontend
-RUN npm run build
-
-# Production stage
 FROM node:20-alpine
 
 WORKDIR /app
@@ -25,13 +5,12 @@ WORKDIR /app
 # Copy package files
 COPY package*.json ./
 
-# Install production dependencies only
-RUN npm ci --only=production
+# Install all dependencies (including devDependencies for server and frontend)
+RUN npm ci
 
-# Copy built assets from builder
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/server.js ./
-COPY --from=builder /app/src ./src
+# Copy all source files
+COPY *.js *.html ./
+COPY src ./src
 
 # Expose port 8080 for Zeabur
 EXPOSE 8080
