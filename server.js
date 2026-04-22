@@ -261,10 +261,46 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  res.writeHead(404, {
+  // Serve static files
+  if (req.method === 'GET') {
+    let filePath = requestUrl.pathname === '/' ? '/index.html' : requestUrl.pathname;
+    filePath = path.join(__dirname, filePath);
+
+    const extname = path.extname(filePath).toLowerCase();
+    const mimeTypes = {
+      '.html': 'text/html; charset=utf-8',
+      '.js': 'application/javascript; charset=utf-8',
+      '.css': 'text/css; charset=utf-8',
+      '.json': 'application/json; charset=utf-8',
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.svg': 'image/svg+xml',
+      '.ico': 'image/x-icon'
+    };
+
+    const contentType = mimeTypes[extname] || 'application/octet-stream';
+
+    try {
+      const content = await fs.readFile(filePath);
+      res.writeHead(200, { 'Content-Type': contentType });
+      res.end(content);
+      return;
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end('<h1>404 - 文件未找到</h1>');
+        return;
+      }
+      res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`<h1>500 - 服务器错误</h1><p>${error.message}</p>`);
+      return;
+    }
+  }
+
+  res.writeHead(405, {
     'Content-Type': 'application/json; charset=utf-8'
   });
-  res.end(JSON.stringify({ error: 'Not found' }));
+  res.end(JSON.stringify({ error: 'Method not allowed' }));
 });
 
 const wss = new WebSocketServer({ server, path: '/proxy' });
