@@ -263,8 +263,14 @@ const server = http.createServer(async (req, res) => {
 
   // Serve static files
   if (req.method === 'GET') {
-    let filePath = requestUrl.pathname === '/' ? '/index.html' : requestUrl.pathname;
-    filePath = path.join(__dirname, filePath);
+    let pathname = requestUrl.pathname;
+    if (pathname === '/') {
+      pathname = '/index.html';
+    }
+    // Remove leading slash for path join
+    const relativePath = pathname.startsWith('/') ? pathname.slice(1) : pathname;
+    const filePath = path.join(__dirname, relativePath);
+    console.log(`[Static] Request: ${requestUrl.pathname} -> ${relativePath} -> ${filePath}`);
 
     const extname = path.extname(filePath).toLowerCase();
     const mimeTypes = {
@@ -287,8 +293,11 @@ const server = http.createServer(async (req, res) => {
       return;
     } catch (error) {
       if (error.code === 'ENOENT') {
+        console.error(`[Static] 404 Not Found: ${filePath}`);
+        console.error(`[Static] Requested URL: ${requestUrl.pathname}`);
+        console.error(`[Static] __dirname: ${__dirname}`);
         res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
-        res.end('<h1>404 - 文件未找到</h1>');
+        res.end(`<h1>404 - 文件未找到</h1><p>请求路径：${requestUrl.pathname}</p>`);
         return;
       }
       res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
