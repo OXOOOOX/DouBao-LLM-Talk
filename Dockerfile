@@ -33,18 +33,16 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/server.js ./
 COPY --from=builder /app/src ./src
 
-# Expose ports
-# 3001 - WebSocket proxy server
-# 5173 - Vite dev server (if running separately)
-EXPOSE 3001
+# Expose port 8080 for Zeabur
+EXPOSE 8080
 
 # Set environment variables
 ENV NODE_ENV=production
-ENV PORT=3001
+ENV PORT=8080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:3001/config || exit 1
+  CMD wget --no-verbose --tries=1 --spider http://localhost:8080/config || exit 1
 
 # Start the server
 CMD ["npm", "run", "server"]
