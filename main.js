@@ -76,6 +76,7 @@ const elements = {
   settingsToggle: document.getElementById('settings-toggle-btn'),
   settingsPanel: document.getElementById('settings-panel'),
   settingsSave: document.getElementById('settings-save-btn'),
+  settingsClearCache: document.getElementById('settings-clear-cache-btn'),
   settingsStatus: document.getElementById('settings-status'),
   startBtn: document.getElementById('start-btn'),
   stopBtn: document.getElementById('stop-btn'),
@@ -337,6 +338,19 @@ async function saveConfig() {
     elements.settingsStatus.textContent = '保存失败：' + e.message;
     elements.settingsStatus.className = 'settings-status error';
   }
+}
+
+async function clearLocalConfig() {
+  localStorage.removeItem('doubao_app_config');
+  await loadConfig();
+
+  if (state.qwenClient) {
+    state.qwenClient.setApiKey(state.config.qwenApiKey);
+    state.qwenClient.setModel(state.config.qwenModel);
+  }
+
+  elements.settingsStatus.textContent = '本地缓存已清除';
+  elements.settingsStatus.className = 'settings-status';
 }
 
 // ==================== 录音控制 ====================
@@ -1131,6 +1145,12 @@ function bindEvents() {
   elements.settingsSave.addEventListener('click', async () => {
     stopShortcutCapture();
     await saveConfig();
+  });
+
+  // 清除本地缓存
+  elements.settingsClearCache.addEventListener('click', async () => {
+    stopShortcutCapture({ restore: true });
+    await clearLocalConfig();
   });
 
   elements.recordShortcut.addEventListener('click', startShortcutCapture);
