@@ -22,7 +22,7 @@ if (fs.existsSync(envPath)) {
   dotenv.config();
 }
 
-const DEFAULT_PORT = 3001;
+const DEFAULT_PORT = 8080;
 const PORT = parseInt(process.env.PORT || '', 10) || DEFAULT_PORT;
 
 // 豆包 WebSocket 地址
