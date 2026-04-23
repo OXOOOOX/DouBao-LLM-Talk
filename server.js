@@ -42,7 +42,7 @@ const DEFAULT_CONFIG = {
   volcResourceId: 'volc.seedasr.sauc.duration',
   volcTtsResourceId: 'seed-tts-2.0',
   volcTtsVoice: 'zh_female_vv_uranus_bigtts',
-  volcProxyUrl: `ws://localhost:${PORT}/proxy`
+  volcProxyUrl: ''
 };
 
 // 存储 WebSocket 连接

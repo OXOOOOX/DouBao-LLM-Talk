@@ -5,15 +5,15 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/config': {
-        target: 'http://localhost:3001',
+        target: 'http://localhost:8080',
         changeOrigin: true
       },
       '/api': {
-        target: 'http://localhost:3001',
+        target: 'http://localhost:8080',
         changeOrigin: true
       },
       '/proxy': {
-        target: 'ws://localhost:3001',
+        target: 'ws://localhost:8080',
         ws: true,
         changeOrigin: true
       }

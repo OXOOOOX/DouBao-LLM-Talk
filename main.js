@@ -153,6 +153,9 @@ async function loadConfig() {
     if (response.ok) {
       const data = await response.json();
       if (data.config) {
+        if (!data.config.volcProxyUrl) {
+          delete data.config.volcProxyUrl;
+        }
         state.config = { ...state.config, ...data.config };
       }
     }
