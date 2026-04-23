@@ -168,6 +168,8 @@ async function loadConfig() {
     const localStr = localStorage.getItem('doubao_app_config');
     if (localStr) {
       const localConfig = JSON.parse(localStr);
+      // volcProxyUrl 应始终由运行时动态计算，不从 localStorage 恢复
+      delete localConfig.volcProxyUrl;
       state.config = { ...state.config, ...localConfig };
       console.log('[Config] 已合并本地 LocalStorage 配置');
     }
@@ -203,8 +205,8 @@ async function saveConfig() {
       volcApiKey: elements.volcApiKey.value.trim(),
       volcResourceId: state.config.volcResourceId,
       volcTtsResourceId: state.config.volcTtsResourceId,
-      volcTtsVoice: elements.volcTtsVoice.value,
-      volcProxyUrl: state.config.volcProxyUrl
+      volcTtsVoice: elements.volcTtsVoice.value
+      // volcProxyUrl 不保存到 localStorage，始终由运行时动态计算
     };
 
     // 仅保存到 localStorage，不再向后端发送保存请求
