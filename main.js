@@ -408,20 +408,29 @@ function handleAsrText(data) {
   // data 结构可能为：
   // { result: { text: "..." }, is_final: true/false }
   // 或 { text: "...", is_definite: true }
+  // 注意：result.text 是累积文本（包含本次会话所有已识别文字）
 
   const text = data.result?.text || data.text || '';
   const isFinal = data.is_final || data.is_definite || false;
 
   if (text) {
     if (isFinal) {
-      // 最终识别结果
+      // 最终识别结果（累积文本）
       currentRealtimeText = text;
       elements.realtimeText.textContent = text;
 
       if (text !== lastDefiniteText && text.trim()) {
+        // 提取新增部分：如果新文本以旧文本开头，只取新增的部分
+        let newText = text;
+        if (lastDefiniteText && text.startsWith(lastDefiniteText)) {
+          newText = text.substring(lastDefiniteText.length).trim();
+        }
         lastDefiniteText = text;
         state.isAwaitingFinalAsr = false;
-        handleUserMessage(text);
+
+        if (newText.trim()) {
+          handleUserMessage(newText);
+        }
       }
     } else {
       // 中间识别结果
@@ -461,6 +470,9 @@ async function handleUserMessage(text) {
       });
     }
 
+    // 先建立 TTS 连接，这样 LLM 一出文字就能立刻送入 TTS
+    await startTTSStream();
+
     let fullResponse = '';
 
     await state.qwenClient.chat(state.conversationHistory, (chunk, full) => {
@@ -470,7 +482,11 @@ async function handleUserMessage(text) {
       if (state.timers.qwenFirstToken === 0) {
         state.timers.qwenFirstToken = Date.now();
         setLatency('首字', Date.now() - state.timers.asrComplete);
+        updateStatus('TTS 播报中...');
       }
+
+      // 流式将完整句子喂给 TTS
+      feedTTSFromStream(full);
     });
 
     state.timers.qwenComplete = Date.now();
@@ -480,13 +496,15 @@ async function handleUserMessage(text) {
     state.conversationHistory.push({ role: 'assistant', content: fullResponse });
     state.currentAssistantMessage = null;
 
-    // 触发 TTS 播报
-    console.log('[Qwen] 回复完成，开始 TTS');
-    await playTTS(fullResponse);
+    // LLM 输出完毕，发送剩余文本并等待 TTS 播放完成
+    console.log('[Pipeline] LLM 完成，等待 TTS 播放完成');
+    await endTTSStream();
 
   } catch (error) {
     console.error('[Qwen] 错误:', error);
     updateAssistantMessage('抱歉，出错了：' + error.message);
+    // 出错时清理 TTS
+    cleanupTTS();
   } finally {
     state.isProcessing = false;
     resetConversationTimers();
@@ -505,7 +523,7 @@ function floatToPCM16(float32Array) {
   return int16Array;
 }
 
-// ==================== TTS 播放 ====================
+// ==================== TTS 流式播放 ====================
 
 // 音频缓冲区 - 用于累积小音频块
 let audioBuffer = [];
@@ -513,131 +531,174 @@ let audioBufferSize = 0;
 let isDecodingAudio = false;
 const MIN_DECODE_SIZE = 1024; // 最小解码大小（字节）
 
-async function playTTS(text) {
-  if (!text || text.trim().length === 0) {
-    console.log('[TTS] 空文本，跳过');
-    return;
-  }
+// 顺序播放控制
+let scheduledEndTime = 0;      // 下一段音频应该开始播放的时间
+let currentPlayingSource = null; // 当前正在播放的音频源
+let isAudioPlaying = false;     // 是否有音频正在播放
 
+// 流式 TTS 句子缓冲
+let ttsSentenceBuffer = '';    // 尚未凑成完整句子的文本
+let ttsSentCharCount = 0;     // 已经发送给 TTS 的字符总数
+
+/**
+ * 初始化 TTS 流式连接（在 LLM 开始流式输出之前调用）
+ */
+async function startTTSStream() {
   state.isPlaying = true;
   state.timers.ttsStart = Date.now();
   state.ttsAudioQueue = [];
   audioBuffer = [];
   audioBufferSize = 0;
   isDecodingAudio = false;
+  scheduledEndTime = 0;
+  currentPlayingSource = null;
+  isAudioPlaying = false;
+  ttsSentenceBuffer = '';
+  ttsSentCharCount = 0;
 
-  try {
-    // 创建 TTS 客户端
-    state.ttsClient = new TTSClient({
-      apiKey: state.config.volcApiKey,
-      resourceId: state.config.volcTtsResourceId,
-      voiceType: state.config.volcTtsVoice,
-      proxyUrl: state.config.volcProxyUrl
-    });
+  // 创建 TTS 客户端
+  state.ttsClient = new TTSClient({
+    apiKey: state.config.volcApiKey,
+    resourceId: state.config.volcTtsResourceId,
+    voiceType: state.config.volcTtsVoice,
+    proxyUrl: state.config.volcProxyUrl
+  });
 
-    // 初始化 AudioContext
-    state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  // 初始化 AudioContext
+  state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
 
-    // 设置音频回调 - 累积音频块
-    state.ttsClient.onAudio = (audioData) => {
-      console.log('[TTS] 收到音频:', audioData.byteLength, 'bytes');
-      audioBuffer.push(new Uint8Array(audioData));
-      audioBufferSize += audioData.byteLength;
+  // 设置音频回调 - 累积音频块
+  state.ttsClient.onAudio = (audioData) => {
+    console.log('[TTS] 收到音频:', audioData.byteLength, 'bytes');
+    audioBuffer.push(new Uint8Array(audioData));
+    audioBufferSize += audioData.byteLength;
 
-      // 当累积足够数据时尝试解码
-      if (audioBufferSize >= MIN_DECODE_SIZE && !isDecodingAudio) {
-        flushAudioBuffer();
-      }
-    };
+    // 当累积足够数据时尝试解码
+    if (audioBufferSize >= MIN_DECODE_SIZE && !isDecodingAudio) {
+      flushAudioBuffer();
+    }
+  };
 
-    // 当 session 结束时，刷新剩余音频
-    state.ttsClient.onEvent = (evtId, json) => {
-      if (evtId === 152 || evtId === 151 || evtId === 153) {
-        // SessionFinished / SessionCanceled / SessionFailed
-        if (audioBufferSize > 0) {
-          flushAudioBuffer();
-        }
-      }
-    };
-
-    state.ttsClient.onOpen = () => {
-      console.log('[TTS] 连接已建立');
-    };
-
-    state.ttsClient.onError = (error) => {
-      console.error('[TTS] 错误:', error.message);
-      updateStatus('TTS 错误：' + error.message);
-    };
-
-    state.ttsClient.onClose = () => {
-      console.log('[TTS] 连接关闭');
-      // 刷新剩余音频
+  // 当 session 结束时，刷新剩余音频
+  state.ttsClient.onEvent = (evtId, json) => {
+    if (evtId === 152 || evtId === 151 || evtId === 153) {
       if (audioBufferSize > 0) {
         flushAudioBuffer();
       }
-    };
+    }
+  };
 
-    // 连接
-    updateStatus('TTS 连接中...');
-    await state.ttsClient.connect();
+  state.ttsClient.onOpen = () => {
+    console.log('[TTS] 连接已建立');
+  };
 
-    // 分句发送
-    updateStatus('TTS 播报中...');
-    const sentences = splitSentences(text);
-    console.log('[TTS] 分句:', sentences.length, '句');
+  state.ttsClient.onError = (error) => {
+    console.error('[TTS] 错误:', error.message);
+  };
 
-    for (let i = 0; i < sentences.length; i++) {
-      const sentence = sentences[i];
-      const isLast = i === sentences.length - 1;
-      if (sentence.trim().length > 0) {
-        state.ttsClient.sendText(sentence, isLast);
-        if (!isLast) await sleep(150);
-      }
+  state.ttsClient.onClose = () => {
+    console.log('[TTS] 连接关闭');
+    if (audioBufferSize > 0) {
+      flushAudioBuffer();
+    }
+  };
+
+  // 连接
+  updateStatus('TTS 连接中...');
+  await state.ttsClient.connect();
+  console.log('[TTS] 流式连接就绪，等待 LLM 输出');
+}
+
+/**
+ * 从 LLM 流式输出中提取完整句子并实时发送给 TTS
+ * @param {string} fullText - LLM 目前累计的完整文本
+ */
+function feedTTSFromStream(fullText) {
+  if (!state.ttsClient?.isConnected) return;
+
+  // 计算新增的文本（fullText 中还没处理过的部分）
+  const processedLength = ttsSentCharCount + ttsSentenceBuffer.length;
+  const newText = fullText.substring(processedLength);
+  if (!newText) return;
+
+  ttsSentenceBuffer += newText;
+
+  // 从缓冲中提取完整句子
+  const { sentences, remaining } = extractCompleteSentences(ttsSentenceBuffer);
+
+  for (const sentence of sentences) {
+    if (sentence.trim().length > 0) {
+      console.log('[TTS] 流式发送句子:', sentence.substring(0, 60));
+      state.ttsClient.sendText(sentence, false);
+      ttsSentCharCount += sentence.length;
+    }
+  }
+
+  ttsSentenceBuffer = remaining;
+}
+
+/**
+ * 从文本中提取完整句子（以标点结尾）
+ */
+function extractCompleteSentences(text) {
+  const sentences = [];
+  let current = '';
+  for (const char of text) {
+    current += char;
+    if (/[。！？!?；;：:，,]/.test(char)) {
+      sentences.push(current);
+      current = '';
+    }
+  }
+  return { sentences, remaining: current };
+}
+
+/**
+ * LLM 输出完毕后调用：发送剩余文本，等待所有音频播放完成，清理资源
+ */
+async function endTTSStream() {
+  try {
+    // 发送剩余未凑成句子的文本
+    if (ttsSentenceBuffer.trim().length > 0 && state.ttsClient?.isConnected) {
+      console.log('[TTS] 发送剩余文本:', ttsSentenceBuffer.substring(0, 60));
+      state.ttsClient.sendText(ttsSentenceBuffer, true);
+      ttsSentenceBuffer = '';
     }
 
-    // 等待播放完成
-    await waitForPlayback();
-
-    // 完成
+    // 结束 TTS session
     state.ttsClient?.finishSession();
+
+    // 等待所有音频播放完成
+    await waitForPlayback();
 
     const duration = Date.now() - state.timers.ttsStart;
     console.log('[TTS] 播报完成，耗时:', duration, 'ms');
     setLatency('TTS 完成', `${duration}ms`);
 
   } catch (error) {
-    console.error('[TTS] 播放错误:', error);
-    updateStatus('TTS 错误：' + error.message);
+    console.error('[TTS] 结束错误:', error);
   } finally {
-    state.isPlaying = false;
-    if (state.ttsClient) {
-      state.ttsClient.close();
-      state.ttsClient = null;
-    }
-    if (state.audioContext) {
-      state.audioContext.close();
-      state.audioContext = null;
-    }
-    audioBuffer = [];
-    audioBufferSize = 0;
-    updateStatus('就绪');
+    cleanupTTS();
   }
 }
 
-function splitSentences(text) {
-  const sentences = [];
-  let current = '';
-  for (const char of text) {
-    current += char;
-    if (/[。！？!?；;：:]/.test(char)) {
-      sentences.push(current.trim());
-      current = '';
-    }
+/**
+ * 清理 TTS 资源
+ */
+function cleanupTTS() {
+  state.isPlaying = false;
+  if (state.ttsClient) {
+    state.ttsClient.close();
+    state.ttsClient = null;
   }
-  if (current.trim().length > 0) {
-    sentences.push(current.trim());
+  if (state.audioContext) {
+    state.audioContext.close();
+    state.audioContext = null;
   }
-  return sentences;
+  audioBuffer = [];
+  audioBufferSize = 0;
+  ttsSentenceBuffer = '';
+  ttsSentCharCount = 0;
 }
 
 /**
@@ -673,13 +734,33 @@ function playNextAudio() {
 
   state.audioContext.decodeAudioData(audioData.slice(0), (decodedBuffer) => {
     isDecodingAudio = false;
+
+    if (!state.audioContext) return; // 已被关闭
+
     const source = state.audioContext.createBufferSource();
     source.buffer = decodedBuffer;
     source.connect(state.audioContext.destination);
-    source.start(0);
+
+    // 顺序排列：每段音频在上一段结束后才开始
+    const now = state.audioContext.currentTime;
+    const startAt = Math.max(now, scheduledEndTime);
+    scheduledEndTime = startAt + decodedBuffer.duration;
+
+    isAudioPlaying = true;
+    currentPlayingSource = source;
+
+    source.start(startAt);
     source.onended = () => {
+      // 检查是否还有更多音频在排队播放
+      if (state.audioContext && state.audioContext.currentTime >= scheduledEndTime - 0.05) {
+        isAudioPlaying = false;
+        currentPlayingSource = null;
+      }
       playNextAudio();
     };
+
+    // 继续解码队列中的下一个（提前解码，排队播放）
+    playNextAudio();
   }, (error) => {
     isDecodingAudio = false;
     console.error('[Audio] 解码失败:', error, '(', audioData.byteLength, 'bytes)');
@@ -690,16 +771,28 @@ function playNextAudio() {
 async function waitForPlayback() {
   const startTime = Date.now();
   const timeout = 60000;
+
+  // 等待所有数据接收完毕
   while (state.ttsAudioQueue.length > 0 || audioBufferSize > 0 || state.ttsClient?.isSessionActive) {
     if (Date.now() - startTime > timeout) {
-      console.log('[TTS] 等待超时');
+      console.log('[TTS] 等待数据超时');
       break;
     }
     await sleep(100);
   }
-  // 等待最后一个解码完成
+
+  // 等待解码完成
   while (isDecodingAudio) {
     await sleep(50);
+  }
+
+  // 等待音频实际播放完毕
+  while (isAudioPlaying) {
+    if (Date.now() - startTime > timeout) {
+      console.log('[TTS] 等待播放超时');
+      break;
+    }
+    await sleep(100);
   }
 }
 
@@ -716,6 +809,14 @@ function stopTTS() {
   audioBuffer = [];
   audioBufferSize = 0;
   isDecodingAudio = false;
+  isAudioPlaying = false;
+  scheduledEndTime = 0;
+  ttsSentenceBuffer = '';
+  ttsSentCharCount = 0;
+  if (currentPlayingSource) {
+    try { currentPlayingSource.stop(); } catch (e) { /* ignore */ }
+    currentPlayingSource = null;
+  }
   state.isPlaying = false;
 }
 
