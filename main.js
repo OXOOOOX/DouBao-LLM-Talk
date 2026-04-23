@@ -234,6 +234,8 @@ function cleanupRecordingResources({ closeClient = true } = {}) {
   }
 }
 
+const DEFAULT_CHAT_SYSTEM_PROMPT = '你是一个对话聊天助手。回复简要，优先通过多轮询问逐步澄清用户需求，不要使用 markdown 格式。';
+
 // ==================== 配置管理 ====================
 
 async function loadConfig() {
@@ -704,7 +706,12 @@ async function handleUserMessage(text) {
     let fullResponse = '';
     let displayedResponse = '';
 
-    await state.qwenClient.chat(state.conversationHistory, (chunk, full) => {
+    const messages = [
+      { role: 'system', content: DEFAULT_CHAT_SYSTEM_PROMPT },
+      ...state.conversationHistory
+    ];
+
+    await state.qwenClient.chat(messages, (chunk, full) => {
       fullResponse = full;
 
       const sentenceDisplayText = getSentenceDisplayText(full);
