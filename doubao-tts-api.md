@@ -50,13 +50,12 @@
 语音合成接口通过 `X-Api-Resource-Id` 参数来选择不同的版本效果：
 
 - `seed-tts-2.0` 仅支持调用 ["豆包语音合成模型 2.0"的音色](https://www.volcengine.com/docs/6561/1257544?lang=zh#%E8%B1%86%E5%8C%85%E8%AF%AD%E9%9F%B3%E5%90%88%E6%88%90%E6%A8%A1%E5%9E%8B2-0-%E9%9F%B3%E8%89%B2%E5%88%97%E8%A1%A8)
-- `seed-tts-1.0` / `seed-tts-1.0-concurr` 仅支持调用 ["豆包语音合成模型 1.0"的音色](https://www.volcengine.com/docs/6561/1257544?lang=zh#%E8%B1%86%E5%8C%85%E8%AF%AD%E9%9F%B3%E5%90%88%E6%88%90%E6%A8%A1%E5%9E%8B1-0-%E9%9F%B3%E8%89%B2%E5%88%97%E8%A1%A8)
+
 
 同时，`X-Api-Resource-Id` 也决定了计费方式：
 
 - `seed-tts-2.0`：对应计费商品为"语音合成 2.0 字符版"
-- `seed-tts-1.0`：对应计费商品为"语音合成 1.0 字符版"
-- `seed-tts-1.0-concurr`：对应计费商品为"声音复刻 1.0 并发版"
+
 
 **豆包声音复刻大模型**
 
@@ -74,23 +73,6 @@
 ```python
 headers = {
     "X-Api-Key": "your-api-key",
-    "X-Api-Resource-Id": "seed-tts-2.0"
-}
-```
-
-若使用 [旧版控制台](https://console.volcengine.com/speech/app) 鉴权方式如下（建议尽快切换至新版）：
-
-| Key | 说明 | 参数类型 | 是否必须 | Value 示例 |
-|---|---|---|---|---|
-| X-Api-App-Id | 使用火山引擎控制台获取的 APP ID | string | 必须 | "123456789" |
-| X-Api-Access-Key | 使用火山引擎控制台获取的 Access Token | string | 必须 | "your-access-key" |
-| X-Api-Resource-Id | 表示调用服务的资源信息 ID | string | 必须 | 见上方说明 |
-| X-Api-Connect-Id | 用于追踪当前连接情况的标志 ID | string | 可选 | "67ee89ba-7050-4c04-a3d7-ac61a63499b3" |
-
-```python
-headers = {
-    "X-Api-App-Id": "123456789",
-    "X-Api-Access-Key": "your-access-key",
     "X-Api-Resource-Id": "seed-tts-2.0"
 }
 ```
@@ -385,9 +367,7 @@ CodeInvalidReqError Code = 45000001 // 客户端请求参数错误
 ### 前提条件
 
 - 调用之前，您需要获取以下信息：
-  - `<appid>`：使用控制台获取的 APP ID
-  - `<access_token>`：使用控制台获取的 Access Token
-  - `<voice_type>`：您预期使用的音色 ID
+鉴权API-KEY
 
 ### Python 环境
 

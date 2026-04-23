@@ -48,7 +48,16 @@ const DEFAULT_CONFIG = {
 // 存储 WebSocket 连接
 const clientConnections = new Map();
 
-function buildVolcHeaders(config, connectId) {
+function buildVolcHeaders(config, connectId, isTts = false) {
+  if (isTts) {
+    // TTS 服务使用 X-Api-Key 鉴权
+    return {
+      'X-Api-Key': config.apiKey,
+      'X-Api-Resource-Id': config.resourceId,
+      'X-Api-Connect-Id': connectId
+    };
+  }
+  // ASR 服务鉴权头（不变）
   return {
     'X-Api-App-Key': config.appKey,
     'X-Api-Access-Key': config.accessKey,
@@ -328,22 +337,36 @@ wss.on('connection', (clientWs, req) => {
   console.log(`[WebSocket] 客户端 ${clientId} 已连接`);
 
   let upstreamWs = null;
-  let messageBuffer = [];
+  let ttsMessageBuffer = [];
+  let asrMessageBuffer = [];
 
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
   const volcAppKey = url.searchParams.get('app_key');
   const volcAccessKey = url.searchParams.get('access_key');
+  const volcApiKey = url.searchParams.get('api_key');
   const volcResourceId = url.searchParams.get('resource_id') || DEFAULT_CONFIG.volcResourceId;
   const volcConnectId = url.searchParams.get('connect_id') || `${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;
 
-  if (!volcAppKey || !volcAccessKey) {
-    console.error('[WebSocket] 缺少鉴权');
-    clientWs.close(4001, 'Missing auth');
+  // 根据 resource_id 判断是 ASR 还是 TTS 请求
+  const isTtsRequest = volcResourceId.includes('seed-tts') || volcResourceId.includes('tts');
+  if (!isTtsRequest && (!volcAppKey || !volcAccessKey)) {
+    console.error('[WebSocket] 缺少 ASR 鉴权');
+    clientWs.close(4001, 'Missing ASR auth');
+    return;
+  }
+  if (isTtsRequest && !volcApiKey) {
+    console.error('[WebSocket] 缺少 TTS 鉴权 (api_key)');
+    clientWs.close(4001, 'Missing TTS auth');
     return;
   }
 
+  const serviceName = isTtsRequest ? 'TTS' : 'ASR';
+
+  // 根据请求类型选择 buffer
+  const messageBuffer = isTtsRequest ? ttsMessageBuffer : asrMessageBuffer;
+  console.log(`[WebSocket] ${serviceName} 使用独立 buffer，当前缓冲：${messageBuffer.length} 条`);
+
   // 根据 resource_id 判断是 ASR 还是 TTS 请求
-  const isTtsRequest = volcResourceId.includes('seed-tts') || volcResourceId.includes('tts');
   const targetUrl = isTtsRequest
     ? `${VOLC_TTS_WS_URL}?connect_id=${encodeURIComponent(volcConnectId)}`
     : `${VOLC_ASR_WS_URL}?connect_id=${encodeURIComponent(volcConnectId)}`;
@@ -351,24 +374,34 @@ wss.on('connection', (clientWs, req) => {
   const headers = buildVolcHeaders({
     appKey: volcAppKey,
     accessKey: volcAccessKey,
+    apiKey: volcApiKey,
     resourceId: volcResourceId
-  }, volcConnectId);
+  }, volcConnectId, isTtsRequest);
 
-  const serviceName = isTtsRequest ? 'TTS' : 'ASR';
   console.log(`[WebSocket] 连接到豆包 ${serviceName}: ${targetUrl}`);
+  console.log(`[WebSocket] 鉴权头:`, JSON.stringify(headers, null, 2));
 
   upstreamWs = new WebSocket(targetUrl, { headers });
   upstreamWs.binaryType = 'arraybuffer';
 
   upstreamWs.on('open', () => {
-    console.log(`[WebSocket] 豆包 ${serviceName} 已连接`);
-    for (const msg of messageBuffer) {
-      upstreamWs.send(msg);
+    console.log(`[WebSocket] 豆包 ${serviceName} 已连接，发送 ${messageBuffer.length} 条缓冲消息`);
+    try {
+      for (const msg of messageBuffer) {
+        console.log(`[WebSocket] 转发缓冲消息到豆包 ${serviceName}: ${msg.byteLength} bytes`);
+        upstreamWs.send(msg);
+      }
+    } catch (error) {
+      console.error(`[WebSocket] 发送缓冲消息失败:`, error);
     }
-    messageBuffer = [];
+    messageBuffer.length = 0;
   });
 
   upstreamWs.on('message', (upstreamData) => {
+    console.log(`[WebSocket] 收到豆包 ${serviceName} 响应: ${upstreamData.byteLength} bytes`);
+    // 打印前 100 字节内容用于调试
+    const bytes = new Uint8Array(upstreamData.slice(0, Math.min(100, upstreamData.byteLength)));
+    console.log(`[WebSocket] ${serviceName} 响应前 100 字节:`, Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' '));
     if (clientWs.readyState === WebSocket.OPEN) {
       clientWs.send(upstreamData);
     }
@@ -378,8 +411,8 @@ wss.on('connection', (clientWs, req) => {
     console.error(`[WebSocket] 豆包 ${serviceName} 错误:`, error);
   });
 
-  upstreamWs.on('close', () => {
-    console.log(`[WebSocket] 豆包 ${serviceName} 连接关闭`);
+  upstreamWs.on('close', (code, reason) => {
+    console.log(`[WebSocket] 豆包 ${serviceName} 连接关闭:`, code, reason?.toString());
     if (clientWs.readyState === WebSocket.OPEN) {
       clientWs.close();
     }
@@ -387,7 +420,9 @@ wss.on('connection', (clientWs, req) => {
 
   clientWs.on('message', async (data) => {
     try {
+      console.log(`[WebSocket] 收到客户端消息: ${data.byteLength} bytes`);
       if (upstreamWs && upstreamWs.readyState === WebSocket.OPEN) {
+        console.log(`[WebSocket] 转发到豆包 ${serviceName}`);
         upstreamWs.send(data);
       } else {
         messageBuffer.push(data);

@@ -20,9 +20,7 @@ const SER_RAW = 0b0000;
 const COMP_NONE = 0b0000;
 
 // Flags
-const FLAG_WITH_SEQUENCE = 0b0001;
-const FLAG_LAST_NO_SEQ = 0b0010;
-const FLAG_LAST_WITH_SEQ = 0b0011;
+const FLAG_WITH_EVENT = 0b0100;
 
 // Events
 const EVT_START_CONNECTION = 1;
@@ -33,92 +31,167 @@ const EVT_FINISH_SESSION = 102;
 const EVT_SESSION_STARTED = 150;
 const EVT_SESSION_FINISHED = 152;
 const EVT_TASK_REQUEST = 200;
+const EVT_TTS_SENTENCE_START = 350;
+const EVT_TTS_SENTENCE_END = 351;
+const EVT_TTS_RESPONSE = 352;
 
-const ERR_SUCCESS = 20000000;
+/**
+ * Build a binary frame for V3 TTS bidirectional protocol.
+ *
+ * Frame layout:
+ *   [4-byte header] [4-byte event] [4-byte connect_id_size + connect_id bytes]? [4-byte payload_size] [payload]
+ *
+ * - StartConnection: no connect_id (server hasn't assigned one yet)
+ * - All subsequent messages (StartSession, TaskRequest, FinishSession, FinishConnection):
+ *   include connect_id field after the event.
+ */
+function buildFrame(eventCode, payload, connectId = null) {
+  const payloadBytes = typeof payload === 'string'
+    ? new TextEncoder().encode(payload)
+    : new Uint8Array(payload);
 
-function buildHeader(type, flags = 0, ser = SER_JSON, comp = COMP_NONE) {
-  const buf = new ArrayBuffer(4);
-  const v = new DataView(buf);
-  v.setUint8(0, (PROTOCOL_VERSION << 4) | HEADER_SIZE);
-  v.setUint8(1, (type << 4) | (flags & 0x0F));
-  v.setUint8(2, ((ser & 0x0F) << 4) | (comp & 0x0F));
-  v.setUint8(3, 0);
-  return buf;
-}
+  const connectIdBytes = connectId ? new TextEncoder().encode(connectId) : null;
 
-function buildFrame(type, payload, flags = 0) {
-  const payloadBytes = typeof payload === 'string' ? new TextEncoder().encode(payload) : new Uint8Array(payload);
-  const header = buildHeader(type, flags);
-  const sizeBuf = new ArrayBuffer(4);
-  new DataView(sizeBuf).setUint32(0, payloadBytes.length, false);
+  let total = 4 + 4; // header + event
+  if (connectIdBytes) total += 4 + connectIdBytes.length;
+  total += 4 + payloadBytes.length; // payload_size + payload
 
-  const total = header.byteLength + sizeBuf.byteLength + payloadBytes.length;
   const buf = new ArrayBuffer(total);
+  const view = new DataView(buf);
   const bytes = new Uint8Array(buf);
-
-  bytes.set(new Uint8Array(header), 0);
-  bytes.set(new Uint8Array(sizeBuf), header.byteLength);
-  bytes.set(payloadBytes, header.byteLength + sizeBuf.byteLength);
-
-  return buf;
-}
-
-function parseFrame(buffer) {
-  const view = new DataView(buffer);
   let offset = 0;
 
+  // Header
+  view.setUint8(offset++, (PROTOCOL_VERSION << 4) | HEADER_SIZE); // 0x11
+  view.setUint8(offset++, (MSG_FULL_CLIENT_REQUEST << 4) | FLAG_WITH_EVENT); // 0x14
+  view.setUint8(offset++, (SER_JSON << 4) | COMP_NONE); // 0x10
+  view.setUint8(offset++, 0x00); // reserved
+
+  // Event number (big-endian)
+  view.setUint32(offset, eventCode, false);
+  offset += 4;
+
+  // Connect ID (length-prefixed, only after ConnectionStarted)
+  if (connectIdBytes) {
+    view.setUint32(offset, connectIdBytes.length, false);
+    offset += 4;
+    bytes.set(connectIdBytes, offset);
+    offset += connectIdBytes.length;
+  }
+
+  // Payload size + payload
+  view.setUint32(offset, payloadBytes.length, false);
+  offset += 4;
+  bytes.set(payloadBytes, offset);
+
+  return buf;
+}
+
+/**
+ * Parse a server response frame.
+ *
+ * Response frame layout:
+ *   [4-byte header]
+ *   [4-byte event]?           (if flag 0b0100 set)
+ *   [string fields]*          (connect_id, session_id, etc. - length-prefixed)
+ *   [4-byte payload_size]
+ *   [payload]
+ *
+ * For error frames (type=0b1111):
+ *   [4-byte header] [4-byte error_code] [4-byte payload_size] [payload]
+ */
+function parseFrame(buffer) {
   if (buffer.byteLength < 4) return null;
 
-  const byte0 = view.getUint8(offset++);
+  const view = new DataView(buffer);
+  const byte0 = view.getUint8(0);
+  const byte1 = view.getUint8(1);
+  const byte2 = view.getUint8(2);
+
   const protocolVersion = (byte0 >> 4) & 0x0F;
   const headerSize = byte0 & 0x0F;
-
-  const byte1 = view.getUint8(offset++);
   const messageType = (byte1 >> 4) & 0x0F;
   const messageFlags = byte1 & 0x0F;
-
-  const byte2 = view.getUint8(offset++);
   const serialization = (byte2 >> 4) & 0x0F;
   const compression = byte2 & 0x0F;
 
-  offset = headerSize * 4;
-
-  let payloadSize = 0;
-  let sequenceId = 0;
-  let payloadOffset = offset;
+  let offset = headerSize * 4;
+  let event = null;
   let errorCode = null;
 
+  // Error frame
   if (messageType === MSG_SERVER_ERROR) {
-    errorCode = view.getUint32(offset);
+    errorCode = view.getUint32(offset, false);
     offset += 4;
-    payloadSize = view.getUint32(offset);
+    const payloadSize = view.getUint32(offset, false);
     offset += 4;
-    payloadOffset = offset;
-  } else if (messageType === MSG_FULL_SERVER_RESPONSE || messageType === MSG_AUDIO_ONLY_RESPONSE) {
-    const hasSeq = messageFlags === FLAG_WITH_SEQUENCE || messageFlags === FLAG_LAST_WITH_SEQ;
-    if (hasSeq) {
-      sequenceId = view.getInt32(offset);
-      offset += 4;
-    }
-    payloadSize = view.getUint32(offset);
-    offset += 4;
-    payloadOffset = offset;
-  } else if (messageType === MSG_AUDIO_ONLY_REQUEST) {
-    payloadSize = view.getUint32(offset);
-    offset += 4;
-    payloadOffset = offset;
-  } else if (messageType === MSG_FULL_CLIENT_REQUEST) {
-    payloadSize = view.getUint32(offset);
-    offset += 4;
-    const hasSeq = messageFlags === FLAG_WITH_SEQUENCE || messageFlags === FLAG_LAST_WITH_SEQ;
-    if (hasSeq) {
-      sequenceId = view.getInt32(offset);
-      offset += 4;
-    }
-    payloadOffset = offset;
+    const payload = buffer.slice(offset, offset + payloadSize);
+    return {
+      protocolVersion,
+      messageType,
+      messageFlags,
+      serialization,
+      compression,
+      event: null,
+      errorCode,
+      payloadSize,
+      payload,
+      isAudio: false,
+      isLast: false
+    };
   }
 
-  const payload = buffer.slice(payloadOffset, payloadOffset + payloadSize);
+  // Event number
+  if (messageFlags & FLAG_WITH_EVENT) {
+    event = view.getUint32(offset, false);
+    offset += 4;
+  }
+
+  // Skip length-prefixed string fields (connect_id, session_id, etc.)
+  // until we find the actual payload.
+  //
+  // Strategy: each field is [4-byte size][content]. For JSON responses,
+  // the payload starts with '{' or '['. For audio responses, the payload
+  // is the LAST size+content block — any preceding blocks are string fields
+  // (connect_id, session_id, etc.) to skip.
+  let payloadSize = 0;
+  let payload = new ArrayBuffer(0);
+  let isAudio = false;
+
+  while (offset + 4 <= buffer.byteLength) {
+    const sizeVal = view.getUint32(offset, false);
+
+    if (sizeVal === 0) {
+      // Empty payload
+      offset += 4;
+      break;
+    }
+
+    if (offset + 4 + sizeVal > buffer.byteLength) {
+      // Size exceeds remaining data - invalid
+      break;
+    }
+
+    const firstByte = view.getUint8(offset + 4);
+    const endOfThisField = offset + 4 + sizeVal;
+    const hasMoreData = endOfThisField < buffer.byteLength;
+
+    if (firstByte === 0x7B || firstByte === 0x5B) {
+      // JSON payload (starts with '{' or '[')
+      payloadSize = sizeVal;
+      payload = buffer.slice(offset + 4, endOfThisField);
+      break;
+    } else if (hasMoreData) {
+      // There's more data after this field → it's a string field (connect_id, etc.)
+      offset = endOfThisField;
+    } else {
+      // This is the last field → it's the actual payload (audio or raw data)
+      payloadSize = sizeVal;
+      payload = buffer.slice(offset + 4, endOfThisField);
+      isAudio = (messageType === MSG_AUDIO_ONLY_RESPONSE);
+      break;
+    }
+  }
 
   return {
     protocolVersion,
@@ -126,18 +199,18 @@ function parseFrame(buffer) {
     messageFlags,
     serialization,
     compression,
-    payloadSize,
-    sequenceId,
-    payload,
+    event,
     errorCode,
-    isLast: messageFlags === FLAG_LAST_NO_SEQ || messageFlags === FLAG_LAST_WITH_SEQ
+    payloadSize,
+    payload,
+    isAudio,
+    isLast: false
   };
 }
 
 export class TTSClient {
   constructor(config) {
-    this.appKey = config.appKey;
-    this.accessKey = config.accessKey;
+    this.apiKey = config.apiKey;
     this.resourceId = config.resourceId || 'seed-tts-2.0';
     this.voiceType = config.voiceType || 'zh_female_vv_uranus_bigtts';
     this.proxyUrl = config.proxyUrl || 'ws://localhost:3001/proxy';
@@ -161,22 +234,23 @@ export class TTSClient {
 
   buildUrl() {
     const params = new URLSearchParams({
-      app_key: this.appKey,
-      access_key: this.accessKey,
+      api_key: this.apiKey,
       resource_id: this.resourceId,
       connect_id: this.connectId
     });
     return `${this.proxyUrl}?${params.toString()}`;
   }
 
+  // StartConnection: no connect_id in frame (server hasn't assigned one yet)
   buildStartConnection() {
     const payload = JSON.stringify({
       user: { uid: `tts-${this.connectId}` },
       event: EVT_START_CONNECTION
     });
-    return buildFrame(MSG_FULL_CLIENT_REQUEST, payload);
+    return buildFrame(EVT_START_CONNECTION, payload);
   }
 
+  // StartSession: includes connect_id
   buildStartSession() {
     const payload = JSON.stringify({
       user: { uid: `tts-${this.connectId}` },
@@ -190,33 +264,36 @@ export class TTSClient {
         }
       }
     });
-    return buildFrame(MSG_FULL_CLIENT_REQUEST, payload);
+    console.log('[TTS] 发送 StartSession:', payload);
+    return buildFrame(EVT_START_SESSION, payload, this.connectId);
   }
 
+  // TaskRequest: includes connect_id
   buildTaskRequest(text, isLast = false) {
     const payload = JSON.stringify({
       user: { uid: `tts-${this.connectId}` },
       event: EVT_TASK_REQUEST,
       req_params: { text }
     });
-    const flags = isLast ? FLAG_LAST_NO_SEQ : 0;
-    return buildFrame(MSG_FULL_CLIENT_REQUEST, payload, flags);
+    return buildFrame(EVT_TASK_REQUEST, payload, this.connectId);
   }
 
+  // FinishSession: includes connect_id
   buildFinishSession() {
     const payload = JSON.stringify({
       user: { uid: `tts-${this.connectId}` },
       event: EVT_FINISH_SESSION
     });
-    return buildFrame(MSG_FULL_CLIENT_REQUEST, payload, FLAG_LAST_NO_SEQ);
+    return buildFrame(EVT_FINISH_SESSION, payload, this.connectId);
   }
 
+  // FinishConnection: includes connect_id
   buildFinishConnection() {
     const payload = JSON.stringify({
       user: { uid: `tts-${this.connectId}` },
       event: EVT_FINISH_CONNECTION
     });
-    return buildFrame(MSG_FULL_CLIENT_REQUEST, payload, FLAG_LAST_NO_SEQ);
+    return buildFrame(EVT_FINISH_CONNECTION, payload, this.connectId);
   }
 
   connect() {
@@ -237,6 +314,7 @@ export class TTSClient {
       this.ws.onopen = () => {
         console.log('[TTS] WebSocket 已连接');
         this.isConnected = true;
+        // 发送 StartConnection (不带 connect_id)
         this.ws.send(this.buildStartConnection());
       };
 
@@ -246,7 +324,9 @@ export class TTSClient {
 
         console.log('[TTS] 收到:', {
           type: parsed.messageType.toString(2).padStart(4, '0'),
-          size: parsed.payloadSize
+          event: parsed.event,
+          size: parsed.payloadSize,
+          isAudio: parsed.isAudio
         });
 
         // 错误处理
@@ -259,20 +339,29 @@ export class TTSClient {
           return;
         }
 
-        // JSON payload
-        if (parsed.payload && parsed.payload.byteLength > 0 &&
-            (parsed.messageType === MSG_FULL_SERVER_RESPONSE)) {
+        // 音频数据 (Audio-only response)
+        if (parsed.isAudio && parsed.payload && parsed.payloadSize > 0) {
+          if (this.onAudio) {
+            this.onAudio(parsed.payload);
+          }
+          return;
+        }
+
+        // JSON payload (Full server response)
+        if (parsed.payload && parsed.payloadSize > 0 &&
+            parsed.messageType === MSG_FULL_SERVER_RESPONSE) {
           try {
             const text = new TextDecoder().decode(parsed.payload);
             const json = JSON.parse(text);
-            console.log('[TTS] 事件:', json.event, json);
+            const evtId = parsed.event || json.event;
+            console.log('[TTS] 事件:', evtId, json);
 
-            if (this.onEvent) this.onEvent(json.event, json);
+            if (this.onEvent) this.onEvent(evtId, json);
 
-            if (json.event === EVT_CONNECTION_STARTED) {
-              console.log('[TTS] 连接已建立，发送 StartSession');
+            if (evtId === EVT_CONNECTION_STARTED) {
+              console.log('[TTS] 连接已启动，发送 StartSession');
               this.ws.send(this.buildStartSession());
-            } else if (json.event === EVT_SESSION_STARTED) {
+            } else if (evtId === EVT_SESSION_STARTED) {
               this.isSessionActive = true;
               if (!this.connectionResolved) {
                 this.connectionResolved = true;
@@ -280,18 +369,11 @@ export class TTSClient {
                 if (this.onOpen) this.onOpen();
                 resolve();
               }
-            } else if (json.event === EVT_SESSION_FINISHED || json.event === EVT_SESSION_STARTED) {
-              // Session 状态变化
+            } else if (evtId === EVT_SESSION_FINISHED || evtId === 153 || evtId === 151) {
+              this.isSessionActive = false;
             }
           } catch (e) {
             console.warn('[TTS] JSON 解析失败:', e);
-          }
-        }
-
-        // 音频 payload
-        if (parsed.payload && parsed.payload.byteLength > 0) {
-          if (this.onAudio) {
-            this.onAudio(parsed.payload);
           }
         }
       };
@@ -345,8 +427,11 @@ export class TTSClient {
       this.finishSession();
     }
     if (this.ws) {
-      this.ws.send(this.buildFinishConnection());
-      setTimeout(() => this.ws?.close(), 100);
+      try {
+        this.ws.close();
+      } catch (e) {
+        // ignore close errors
+      }
       this.ws = null;
     }
     this.isConnected = false;

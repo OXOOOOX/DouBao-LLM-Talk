@@ -507,6 +507,12 @@ function floatToPCM16(float32Array) {
 
 // ==================== TTS 播放 ====================
 
+// 音频缓冲区 - 用于累积小音频块
+let audioBuffer = [];
+let audioBufferSize = 0;
+let isDecodingAudio = false;
+const MIN_DECODE_SIZE = 1024; // 最小解码大小（字节）
+
 async function playTTS(text) {
   if (!text || text.trim().length === 0) {
     console.log('[TTS] 空文本，跳过');
@@ -516,12 +522,14 @@ async function playTTS(text) {
   state.isPlaying = true;
   state.timers.ttsStart = Date.now();
   state.ttsAudioQueue = [];
+  audioBuffer = [];
+  audioBufferSize = 0;
+  isDecodingAudio = false;
 
   try {
     // 创建 TTS 客户端
     state.ttsClient = new TTSClient({
-      appKey: state.config.volcAppKey,
-      accessKey: state.config.volcAccessKey,
+      apiKey: state.config.volcApiKey,
       resourceId: state.config.volcTtsResourceId,
       voiceType: state.config.volcTtsVoice,
       proxyUrl: state.config.volcProxyUrl
@@ -530,11 +538,26 @@ async function playTTS(text) {
     // 初始化 AudioContext
     state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
 
-    // 设置音频回调
+    // 设置音频回调 - 累积音频块
     state.ttsClient.onAudio = (audioData) => {
       console.log('[TTS] 收到音频:', audioData.byteLength, 'bytes');
-      state.ttsAudioQueue.push(audioData);
-      playNextAudio();
+      audioBuffer.push(new Uint8Array(audioData));
+      audioBufferSize += audioData.byteLength;
+
+      // 当累积足够数据时尝试解码
+      if (audioBufferSize >= MIN_DECODE_SIZE && !isDecodingAudio) {
+        flushAudioBuffer();
+      }
+    };
+
+    // 当 session 结束时，刷新剩余音频
+    state.ttsClient.onEvent = (evtId, json) => {
+      if (evtId === 152 || evtId === 151 || evtId === 153) {
+        // SessionFinished / SessionCanceled / SessionFailed
+        if (audioBufferSize > 0) {
+          flushAudioBuffer();
+        }
+      }
     };
 
     state.ttsClient.onOpen = () => {
@@ -548,6 +571,10 @@ async function playTTS(text) {
 
     state.ttsClient.onClose = () => {
       console.log('[TTS] 连接关闭');
+      // 刷新剩余音频
+      if (audioBufferSize > 0) {
+        flushAudioBuffer();
+      }
     };
 
     // 连接
@@ -591,6 +618,8 @@ async function playTTS(text) {
       state.audioContext.close();
       state.audioContext = null;
     }
+    audioBuffer = [];
+    audioBufferSize = 0;
     updateStatus('就绪');
   }
 }
@@ -611,21 +640,49 @@ function splitSentences(text) {
   return sentences;
 }
 
-function playNextAudio() {
-  if (state.ttsAudioQueue.length === 0 || !state.audioContext) return;
+/**
+ * 合并音频缓冲区并加入播放队列
+ */
+function flushAudioBuffer() {
+  if (audioBuffer.length === 0 || audioBufferSize === 0) return;
 
+  // 合并所有小块为一个大块
+  const combined = new Uint8Array(audioBufferSize);
+  let offset = 0;
+  for (const chunk of audioBuffer) {
+    combined.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  console.log('[TTS] 合并音频块:', audioBuffer.length, '块 →', audioBufferSize, 'bytes');
+
+  // 清空缓冲
+  audioBuffer = [];
+  audioBufferSize = 0;
+
+  // 加入播放队列
+  state.ttsAudioQueue.push(combined.buffer);
+  playNextAudio();
+}
+
+function playNextAudio() {
+  if (state.ttsAudioQueue.length === 0 || !state.audioContext || isDecodingAudio) return;
+
+  isDecodingAudio = true;
   const audioData = state.ttsAudioQueue.shift();
 
-  state.audioContext.decodeAudioData(audioData.slice(0), (audioBuffer) => {
+  state.audioContext.decodeAudioData(audioData.slice(0), (decodedBuffer) => {
+    isDecodingAudio = false;
     const source = state.audioContext.createBufferSource();
-    source.buffer = audioBuffer;
+    source.buffer = decodedBuffer;
     source.connect(state.audioContext.destination);
     source.start(0);
     source.onended = () => {
       playNextAudio();
     };
   }, (error) => {
-    console.error('[Audio] 解码失败:', error);
+    isDecodingAudio = false;
+    console.error('[Audio] 解码失败:', error, '(', audioData.byteLength, 'bytes)');
     playNextAudio();
   });
 }
@@ -633,12 +690,16 @@ function playNextAudio() {
 async function waitForPlayback() {
   const startTime = Date.now();
   const timeout = 60000;
-  while (state.ttsAudioQueue.length > 0 || state.ttsClient?.isSessionActive) {
+  while (state.ttsAudioQueue.length > 0 || audioBufferSize > 0 || state.ttsClient?.isSessionActive) {
     if (Date.now() - startTime > timeout) {
       console.log('[TTS] 等待超时');
       break;
     }
     await sleep(100);
+  }
+  // 等待最后一个解码完成
+  while (isDecodingAudio) {
+    await sleep(50);
   }
 }
 
@@ -652,6 +713,9 @@ function stopTTS() {
     state.ttsClient.cancelSession();
   }
   state.ttsAudioQueue = [];
+  audioBuffer = [];
+  audioBufferSize = 0;
+  isDecodingAudio = false;
   state.isPlaying = false;
 }
 
