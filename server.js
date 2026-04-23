@@ -70,13 +70,7 @@ function buildVolcHeaders(config, connectId, isTts = false) {
  * 检查来源是否允许
  */
 function isAllowedOrigin(origin) {
-  if (!origin) return true;
-  try {
-    const url = new URL(origin);
-    return ['localhost', '127.0.0.1'].includes(url.hostname);
-  } catch {
-    return false;
-  }
+  return true;
 }
 
 /**
