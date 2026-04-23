@@ -27,7 +27,7 @@
     <section id="settings-panel" class="panel settings-panel" hidden>
       <div class="settings-grid">
         <div class="settings-section">
-          <h2>🤖 大模型设置</h2>
+          <h2>大模型设置</h2>
           <label class="input-group">
             <span>QWEN API Key</span>
             <input id="settings-qwen-api-key" type="password" placeholder="sk-..." autocomplete="off">
@@ -43,7 +43,7 @@
         </div>
 
         <div class="settings-section">
-          <h2>🎤 豆包设置</h2>
+          <h2>豆包设置</h2>
           <p class="settings-note">ASR 使用 X-Api-App-Key、X-Api-Access-Key 与 X-Api-Resource-Id；本地开发默认从 `.env.local` 读取，发布后可手动填写</p>
           <label class="input-group">
             <span>App Key</span>
@@ -84,7 +84,7 @@
 
     <div class="controls panel">
       <label class="input-group">
-        <span>🤖 LLM 模型</span>
+        <span>LLM 模型</span>
         <select id="model-select">
           <option value="qwen-max">qwen-max</option>
           <option value="qwen-plus">qwen-plus</option>
@@ -92,7 +92,7 @@
         </select>
       </label>
       <label class="input-group">
-        <span>🎤 豆包音色</span>
+        <span>豆包音色</span>
         <select id="voice-select">
           <option value="zh_female_vv_uranus_bigtts">温柔女声</option>
           <option value="zh_female_cancan_mars_bigtts">灿灿女声</option>
@@ -102,13 +102,13 @@
         </select>
       </label>
       <button id="start-btn" class="btn btn-primary">
-        <span>🎤 开始录音</span>
+        <span>开始录音</span>
       </button>
       <button id="stop-btn" class="btn btn-danger" disabled>
-        <span>⏹️ 停止录音</span>
+        <span>停止录音</span>
       </button>
       <button id="clear-btn" class="btn btn-secondary">
-        <span>🗑️ 清空对话</span>
+        <span>清空对话</span>
       </button>
     </div>
 

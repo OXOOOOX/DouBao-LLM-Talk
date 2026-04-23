@@ -234,6 +234,12 @@ function cleanupRecordingResources({ closeClient = true } = {}) {
   }
 }
 
+function setSettingsPanelVisible(visible) {
+  elements.settingsPanel.hidden = !visible;
+  elements.settingsToggle.setAttribute('aria-expanded', String(visible));
+  elements.settingsToggle.textContent = visible ? '隐藏设置' : '显示设置';
+}
+
 const DEFAULT_CHAT_SYSTEM_PROMPT = '你是一个对话聊天助手。回复简要，优先通过多轮询问逐步澄清用户需求，不要使用 markdown 格式。';
 
 // ==================== 配置管理 ====================
@@ -315,7 +321,7 @@ async function saveConfig() {
     elements.recordShortcut.value = state.config.recordShortcut;
     console.log('[Config] 已保存到 LocalStorage:', config);
 
-    elements.settingsStatus.textContent = '✓ 已保存到本地';
+    elements.settingsStatus.textContent = '已保存到本地';
 
     // 同步到主控件
     elements.modelSelect.value = state.config.qwenModel;
@@ -328,7 +334,7 @@ async function saveConfig() {
     }
   } catch (e) {
     console.error('[Config] 保存失败:', e);
-    elements.settingsStatus.textContent = '✗ 保存失败：' + e.message;
+    elements.settingsStatus.textContent = '保存失败：' + e.message;
     elements.settingsStatus.className = 'settings-status error';
   }
 }
@@ -1118,9 +1124,7 @@ function bindEvents() {
 
   // 设置面板切换
   elements.settingsToggle.addEventListener('click', () => {
-    const isHidden = elements.settingsPanel.hidden;
-    elements.settingsPanel.hidden = !isHidden;
-    elements.settingsToggle.setAttribute('aria-expanded', String(isHidden));
+    setSettingsPanelVisible(elements.settingsPanel.hidden);
   });
 
   // 保存设置
@@ -1283,6 +1287,7 @@ async function init() {
   console.log('[App] 初始化...');
 
   bindEvents();
+  setSettingsPanelVisible(false);
   resetConversationTimers();
   await loadConfig();
 
