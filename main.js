@@ -145,28 +145,34 @@ function generateConnectId() {
 async function loadConfig() {
   console.log('[Config] 开始加载配置...');
 
-  // 从服务器加载配置（服务器会读取 .env.local）
+  // 1. 从服务器加载默认配置（只读）
   try {
     const response = await fetch('/config');
     console.log('[Config] 响应状态:', response.status);
 
     if (response.ok) {
       const data = await response.json();
-      console.log('[Config] 服务器返回数据:', data);
-
       if (data.config) {
         state.config = { ...state.config, ...data.config };
-        console.log('[Config] 合并后配置:', state.config);
       }
-    } else {
-      console.error('[Config] 响应失败:', response.status);
     }
   } catch (e) {
-    console.error('[Config] 加载异常:', e);
+    console.error('[Config] 服务器配置加载异常:', e);
+  }
+
+  // 2. 从 localStorage 读取用户本地配置并覆盖
+  try {
+    const localStr = localStorage.getItem('doubao_app_config');
+    if (localStr) {
+      const localConfig = JSON.parse(localStr);
+      state.config = { ...state.config, ...localConfig };
+      console.log('[Config] 已合并本地 LocalStorage 配置');
+    }
+  } catch (e) {
+    console.error('[Config] LocalStorage 读取失败:', e);
   }
 
   // 填充设置表单
-  console.log('[Config] 填充表单');
   elements.qwenApiKey.value = state.config.qwenApiKey || '';
   elements.qwenModel.value = state.config.qwenModel || 'qwen-max';
   elements.volcAppKey.value = state.config.volcAppKey || '';
@@ -178,7 +184,7 @@ async function loadConfig() {
   elements.modelSelect.value = state.config.qwenModel || 'qwen-max';
   elements.voiceSelect.value = state.config.volcTtsVoice || 'zh_female_vv_uranus_bigtts';
 
-  console.log('[Config] 配置加载完成');
+  console.log('[Config] 配置加载完成:', state.config);
 }
 
 async function saveConfig() {
@@ -198,32 +204,22 @@ async function saveConfig() {
       volcProxyUrl: state.config.volcProxyUrl
     };
 
-    console.log('[Config] 保存配置:', config);
+    // 仅保存到 localStorage，不再向后端发送保存请求
+    localStorage.setItem('doubao_app_config', JSON.stringify(config));
+    
+    state.config = { ...state.config, ...config };
+    console.log('[Config] 已保存到 LocalStorage:', config);
 
-    const response = await fetch('/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ config })
-    });
+    elements.settingsStatus.textContent = '✓ 已保存到本地';
 
-    if (response.ok) {
-      const data = await response.json();
-      state.config = { ...state.config, ...data.config };
-      console.log('[Config] 已保存，服务器返回:', data.config);
-      elements.settingsStatus.textContent = '✓ 已保存';
+    // 同步到主控件
+    elements.modelSelect.value = state.config.qwenModel;
+    elements.voiceSelect.value = state.config.volcTtsVoice;
 
-      // 同步到主控件
-      elements.modelSelect.value = state.config.qwenModel;
-      elements.voiceSelect.value = state.config.volcTtsVoice;
-
-      // 更新客户端配置
-      if (state.qwenClient) {
-        state.qwenClient.setApiKey(state.config.qwenApiKey);
-        state.qwenClient.setModel(state.config.qwenModel);
-      }
-    } else {
-      const error = await response.json();
-      throw new Error(error.error || '保存失败');
+    // 更新客户端配置
+    if (state.qwenClient) {
+      state.qwenClient.setApiKey(state.config.qwenApiKey);
+      state.qwenClient.setModel(state.config.qwenModel);
     }
   } catch (e) {
     console.error('[Config] 保存失败:', e);

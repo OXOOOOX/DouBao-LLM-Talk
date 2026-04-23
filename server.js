@@ -195,52 +195,7 @@ async function handleConfigRequest(req, res) {
   }
 
   if (req.method === 'POST') {
-    const requestBody = await readRequestBody(req);
-    const config = requestBody.config || {};
-
-    // 验证模型
-    if (config.qwenModel && !ALLOWED_QWEN_MODELS.has(config.qwenModel)) {
-      sendJson(req, res, 400, { error: '不支持的 QWEN 模型' });
-      return;
-    }
-
-    // 读取当前.env 内容
-    let envText = await readEnvFile();
-    let lines = envText ? envText.split(/\r?\n/) : [];
-
-    // 更新或添加环境变量
-    const envUpdates = {
-      'VITE_ALYUN_API_KEY': config.qwenApiKey,
-      'VITE_DASHSCOPE_KEY': config.qwenApiKey,
-      'VITE_QWEN_MODEL': config.qwenModel,
-      'VITE_VOLC_APP_ID': config.volcAppKey,
-      'VITE_VOLC_APP_KEY': config.volcAppKey,
-      'VITE_VOLC_ACCESS_TOKEN': config.volcAccessKey,
-      'VITE_VOLC_ACCESS_KEY': config.volcAccessKey,
-      'VITE_VOLC_SECRET_KEY': config.volcApiKey,
-      'VITE_VOLC_API_KEY': config.volcApiKey,
-      'VITE_VOLC_RESOURCE_ID': config.volcResourceId,
-      'VITE_VOLC_TTS_RESOURCE_ID': config.volcTtsResourceId,
-      'VITE_VOLC_TTS_VOICE': config.volcTtsVoice,
-      'VITE_VOLC_PROXY_URL': config.volcProxyUrl
-    };
-
-    for (const [key, value] of Object.entries(envUpdates)) {
-      const newValue = `${key}=${String(value ?? '').replace(/\r?\n/g, ' ').trim()}`;
-      const existingIndex = lines.findIndex(line => line.match(new RegExp(`^\\s*${key}\\s*=`)));
-
-      if (existingIndex >= 0) {
-        lines[existingIndex] = newValue;
-      } else if (value) {
-        lines.push(newValue);
-      }
-    }
-
-    // 写回文件
-    const newEnvText = lines.join('\n').replace(/\n{3,}/g, '\n\n');
-    await fsPromises.writeFile(ENV_PATH, newEnvText.endsWith('\n') ? newEnvText : newEnvText + '\n', 'utf8');
-
-    sendJson(req, res, 200, { config: mapEnvToConfig(newEnvText) });
+    sendJson(req, res, 403, { error: '禁止在服务端修改配置，请使用前端 LocalStorage' });
     return;
   }
 
