@@ -20,7 +20,7 @@ const state = {
     volcResourceId: 'volc.seedasr.sauc.duration',
     volcTtsResourceId: 'seed-tts-2.0',
     volcTtsVoice: 'zh_female_vv_uranus_bigtts',
-    volcProxyUrl: 'ws://localhost:3001/proxy'
+    volcProxyUrl: `ws://${window.location.host}/proxy`
   },
 
   // 录音状态
