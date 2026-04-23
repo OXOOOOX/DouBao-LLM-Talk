@@ -20,12 +20,24 @@ const state = {
     volcResourceId: 'volc.seedasr.sauc.duration',
     volcTtsResourceId: 'seed-tts-2.0',
     volcTtsVoice: 'zh_female_vv_uranus_bigtts',
+    recordShortcut: 'F6',
     volcProxyUrl: `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/proxy`
   },
 
   // 录音状态
   isRecording: false,
   isAwaitingFinalAsr: false,
+  recordingPhase: 'idle',
+  recordingMode: null,
+  activeStartRequestId: 0,
+  shortcutPress: {
+    isDown: false,
+    key: '',
+    startedAt: 0,
+    holdTimerId: null,
+    isHoldMode: false,
+    suppressKeyup: false
+  },
   audioContext: null,
   mediaStream: null,
   scriptProcessor: null,
@@ -81,7 +93,8 @@ const elements = {
   volcAppKey: document.getElementById('settings-volc-app-key'),
   volcAccessKey: document.getElementById('settings-volc-access-key'),
   volcApiKey: document.getElementById('settings-volc-api-key'),
-  volcTtsVoice: document.getElementById('settings-volc-tts-voice')
+  volcTtsVoice: document.getElementById('settings-volc-tts-voice'),
+  recordShortcut: document.getElementById('settings-record-shortcut')
 };
 
 // ==================== 工具函数 ====================
@@ -149,6 +162,78 @@ function generateConnectId() {
   return `${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;
 }
 
+function normalizeShortcutKey(key) {
+  if (!key) return 'F6';
+  if (key === ' ') return 'Space';
+  if (key === 'Spacebar') return 'Space';
+  if (key.length === 1) return key.toUpperCase();
+  return key;
+}
+
+function isTypingTarget(target) {
+  if (!target) return false;
+  return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target.isContentEditable;
+}
+
+function clearShortcutHoldTimer() {
+  if (state.shortcutPress.holdTimerId) {
+    clearTimeout(state.shortcutPress.holdTimerId);
+    state.shortcutPress.holdTimerId = null;
+  }
+}
+
+function resetShortcutPress() {
+  clearShortcutHoldTimer();
+  state.shortcutPress.isDown = false;
+  state.shortcutPress.key = '';
+  state.shortcutPress.startedAt = 0;
+  state.shortcutPress.isHoldMode = false;
+  state.shortcutPress.suppressKeyup = false;
+}
+
+function invalidateRecordingStart() {
+  state.activeStartRequestId += 1;
+}
+
+function isStartRequestActive(requestId) {
+  return state.activeStartRequestId === requestId;
+}
+
+function shouldUseSilenceAutoSubmit() {
+  return state.recordingMode !== 'hold';
+}
+
+function setRecordingMode(mode) {
+  state.recordingMode = mode;
+}
+
+function setRecordingPhase(phase) {
+  state.recordingPhase = phase;
+}
+
+function cleanupRecordingResources({ closeClient = true } = {}) {
+  if (state.scriptProcessor) {
+    state.scriptProcessor.disconnect();
+    state.scriptProcessor.onaudioprocess = null;
+    state.scriptProcessor = null;
+  }
+
+  if (state.audioContext) {
+    state.audioContext.close();
+    state.audioContext = null;
+  }
+
+  if (state.mediaStream) {
+    state.mediaStream.getTracks().forEach(track => track.stop());
+    state.mediaStream = null;
+  }
+
+  if (closeClient && state.asrClient) {
+    state.asrClient.close();
+    state.asrClient = null;
+  }
+}
+
 // ==================== 配置管理 ====================
 
 async function loadConfig() {
@@ -193,6 +278,8 @@ async function loadConfig() {
   elements.volcAccessKey.value = state.config.volcAccessKey || '';
   elements.volcApiKey.value = state.config.volcApiKey || '';
   elements.volcTtsVoice.value = state.config.volcTtsVoice || 'zh_female_vv_uranus_bigtts';
+  state.config.recordShortcut = normalizeShortcutKey(state.config.recordShortcut || 'F6');
+  elements.recordShortcut.value = state.config.recordShortcut;
 
   // 同步到主控件
   elements.modelSelect.value = state.config.qwenModel || 'qwen-max';
@@ -214,14 +301,16 @@ async function saveConfig() {
       volcApiKey: elements.volcApiKey.value.trim(),
       volcResourceId: state.config.volcResourceId,
       volcTtsResourceId: state.config.volcTtsResourceId,
-      volcTtsVoice: elements.volcTtsVoice.value
+      volcTtsVoice: elements.volcTtsVoice.value,
+      recordShortcut: normalizeShortcutKey(elements.recordShortcut.value || state.config.recordShortcut || 'F6')
       // volcProxyUrl 不保存到 localStorage，始终由运行时动态计算
     };
 
     // 仅保存到 localStorage，不再向后端发送保存请求
     localStorage.setItem('doubao_app_config', JSON.stringify(config));
-    
+
     state.config = { ...state.config, ...config };
+    elements.recordShortcut.value = state.config.recordShortcut;
     console.log('[Config] 已保存到 LocalStorage:', config);
 
     elements.settingsStatus.textContent = '✓ 已保存到本地';
@@ -244,11 +333,19 @@ async function saveConfig() {
 
 // ==================== 录音控制 ====================
 
-async function startRecording() {
-  if (state.isRecording) return;
+async function startRecording(mode = 'button') {
+  if (state.isRecording || state.recordingPhase === 'starting') return;
+
+  invalidateRecordingStart();
+  const requestId = state.activeStartRequestId;
+  setRecordingPhase('starting');
+  setRecordingMode(mode);
 
   // 先重新加载配置，确保使用最新的配置
   await loadConfig();
+  if (!isStartRequestActive(requestId)) {
+    return;
+  }
 
   // 开始录音时只打断 TTS，不打断 LLM 输出
   clearSilenceTimer();
@@ -265,12 +362,16 @@ async function startRecording() {
   console.log('[Recording] 检查配置:', state.config);
 
   if (!state.config.volcAppKey || !state.config.volcAccessKey) {
+    setRecordingPhase('idle');
+    setRecordingMode(null);
     updateStatus('错误：请先配置豆包 ASR 鉴权');
     appendMessage('system', '请在设置中配置豆包 ASR 的 App Key 和 Access Key');
     return;
   }
 
   if (!state.config.qwenApiKey) {
+    setRecordingPhase('idle');
+    setRecordingMode(null);
     updateStatus('错误：请先配置 Qwen API Key');
     appendMessage('system', '请先在设置中配置 Qwen API Key');
     return;
@@ -279,8 +380,7 @@ async function startRecording() {
   updateStatus('连接 ASR...');
 
   try {
-    // 获取麦克风权限
-    state.mediaStream = await navigator.mediaDevices.getUserMedia({
+    const mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         sampleRate: 16000,
         channelCount: 1,
@@ -289,88 +389,131 @@ async function startRecording() {
       }
     });
 
-    state.asrClient = new DoubaoClient({
+    if (!isStartRequestActive(requestId)) {
+      mediaStream.getTracks().forEach(track => track.stop());
+      return;
+    }
+
+    state.mediaStream = mediaStream;
+
+    const asrClient = new DoubaoClient({
       appKey: state.config.volcAppKey,
       accessKey: state.config.volcAccessKey,
       resourceId: state.config.volcResourceId,
       proxyUrl: state.config.volcProxyUrl
     });
 
-    // 设置回调
-    state.asrClient.onOpen = () => {
+    state.asrClient = asrClient;
+
+    asrClient.onOpen = () => {
+      if (!isStartRequestActive(requestId)) {
+        asrClient.close();
+        return;
+      }
+
       console.log('[ASR] 已连接');
+      setRecordingPhase('recording');
       updateStatus('正在录音...');
       state.isRecording = true;
       elements.startBtn.disabled = true;
       elements.stopBtn.disabled = false;
     };
 
-    state.asrClient.onText = (data) => {
+    asrClient.onText = (data) => {
       console.log('[ASR] 文本:', data);
       handleAsrText(data);
     };
 
-    state.asrClient.onAudio = (audioData) => {
+    asrClient.onAudio = (audioData) => {
       console.log('[ASR] 音频数据:', audioData.byteLength, 'bytes');
     };
 
-    state.asrClient.onEvent = (event) => {
+    asrClient.onEvent = (event) => {
       console.log('[ASR] 事件:', event);
     };
 
-    state.asrClient.onError = (error) => {
+    asrClient.onError = (error) => {
       console.error('[ASR] 错误:', error);
       clearSilenceTimer();
+      resetShortcutPress();
       state.isAwaitingFinalAsr = false;
+      state.isRecording = false;
+      setRecordingPhase('idle');
+      setRecordingMode(null);
+      elements.startBtn.disabled = false;
+      elements.stopBtn.disabled = true;
       updateStatus('ASR 错误');
       appendMessage('system', 'ASR 连接失败，请检查配置和网络');
     };
 
-    state.asrClient.onClose = async () => {
+    asrClient.onClose = async () => {
       console.log('[ASR] 连接关闭');
       clearSilenceTimer();
       state.asrClient = null;
+      state.isRecording = false;
+      setRecordingPhase('idle');
+      setRecordingMode(null);
+      elements.startBtn.disabled = false;
+      elements.stopBtn.disabled = true;
       const submitted = await submitPendingAsrText();
       if (!submitted && !state.isProcessing) {
         updateStatus('就绪');
       }
     };
 
-    // 连接
-    await state.asrClient.connect();
+    await asrClient.connect();
+    if (!isStartRequestActive(requestId)) {
+      cleanupRecordingResources();
+      return;
+    }
 
-    // 创建 AudioContext
-    state.audioContext = new AudioContext({ sampleRate: 16000 });
-    const source = state.audioContext.createMediaStreamSource(state.mediaStream);
+    const audioContext = new AudioContext({ sampleRate: 16000 });
+    if (!isStartRequestActive(requestId)) {
+      audioContext.close();
+      cleanupRecordingResources();
+      return;
+    }
 
-    // 使用 ScriptProcessor 处理音频
-    state.scriptProcessor = state.audioContext.createScriptProcessor(4096, 1, 1);
-    source.connect(state.scriptProcessor);
-    state.scriptProcessor.connect(state.audioContext.destination);
+    state.audioContext = audioContext;
+    const source = audioContext.createMediaStreamSource(state.mediaStream);
+    const scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+    state.scriptProcessor = scriptProcessor;
+    source.connect(scriptProcessor);
+    scriptProcessor.connect(audioContext.destination);
 
-    state.scriptProcessor.onaudioprocess = (e) => {
+    scriptProcessor.onaudioprocess = (e) => {
       if (!state.isRecording || !state.asrClient?.isConnected) return;
 
       const inputData = e.inputBuffer.getChannelData(0);
       const pcmData = floatToPCM16(inputData);
       state.asrClient.sendAudio(pcmData.buffer);
     };
-
   } catch (error) {
     console.error('[Recording] 启动失败:', error);
+    if (!isStartRequestActive(requestId)) {
+      cleanupRecordingResources();
+      return;
+    }
+
+    setRecordingPhase('idle');
+    setRecordingMode(null);
+    resetShortcutPress();
     updateStatus('错误：' + error.message);
     appendMessage('system', '录音启动失败：' + error.message);
-    stopRecording();
+    cleanupRecordingResources();
   }
 }
 
 function stopRecording() {
-  if (!state.isRecording && !state.asrClient && !state.mediaStream && !state.audioContext && !state.scriptProcessor) {
+  if (!state.isRecording && !state.asrClient && !state.mediaStream && !state.audioContext && !state.scriptProcessor && state.recordingPhase !== 'starting') {
     return;
   }
 
+  invalidateRecordingStart();
   clearSilenceTimer();
+  clearShortcutHoldTimer();
   state.isRecording = false;
+  setRecordingPhase('finalizing');
   state.isAwaitingFinalAsr = Boolean(state.asrClient?.isConnected);
   updateStatus(state.isAwaitingFinalAsr || state.isProcessing ? '处理中...' : '就绪');
 
@@ -378,28 +521,20 @@ function stopRecording() {
     state.asrClient.sendEndRequest();
   }
 
-  if (state.scriptProcessor) {
-    state.scriptProcessor.disconnect();
-    state.scriptProcessor.onaudioprocess = null;
-    state.scriptProcessor = null;
-  }
-
-  if (state.audioContext) {
-    state.audioContext.close();
-    state.audioContext = null;
-  }
-
-  if (state.mediaStream) {
-    state.mediaStream.getTracks().forEach(track => track.stop());
-    state.mediaStream = null;
-  }
-
+  cleanupRecordingResources({ closeClient: false });
   elements.startBtn.disabled = false;
   elements.stopBtn.disabled = true;
+
+  if (!state.asrClient) {
+    state.isAwaitingFinalAsr = false;
+    setRecordingPhase('idle');
+    setRecordingMode(null);
+  }
 }
 
 function stopCurrentOutput() {
   clearSilenceTimer();
+  resetShortcutPress();
   state.isSpeaking = false;
   state.isProcessing = false;
   state.isAwaitingFinalAsr = false;
@@ -423,6 +558,7 @@ function stopCurrentOutput() {
 // ==================== ASR 处理 ====================
 
 const SILENCE_AUTO_SUBMIT_MS = 3000;
+const SHORTCUT_HOLD_THRESHOLD_MS = 1000;
 
 let currentRealtimeText = '';
 let lastDefiniteText = '';
@@ -438,7 +574,7 @@ function clearSilenceTimer() {
 }
 
 function armSilenceTimer() {
-  if (!state.isRecording || state.isProcessing || !currentRealtimeText.trim()) {
+  if (!state.isRecording || state.isProcessing || !currentRealtimeText.trim() || !shouldUseSilenceAutoSubmit()) {
     return;
   }
 
@@ -458,7 +594,7 @@ function armSilenceTimer() {
 }
 
 async function finalizeRecordingFromSilence() {
-  if (!state.isRecording || state.isProcessing || !currentRealtimeText.trim()) {
+  if (!state.isRecording || state.isProcessing || !currentRealtimeText.trim() || !shouldUseSilenceAutoSubmit()) {
     return false;
   }
 
@@ -929,6 +1065,50 @@ function stopTTS() {
 // ==================== 事件绑定 ====================
 
 function bindEvents() {
+  let isCapturingRecordShortcut = false;
+  let previousRecordShortcut = state.config.recordShortcut;
+
+  function startShortcutCapture() {
+    if (isCapturingRecordShortcut) {
+      return;
+    }
+
+    previousRecordShortcut = elements.recordShortcut.value || state.config.recordShortcut || 'F6';
+    isCapturingRecordShortcut = true;
+    elements.recordShortcut.value = '按下一个键...';
+    elements.recordShortcut.classList.add('capturing');
+    elements.settingsStatus.textContent = '按下一个键，Esc 取消';
+    elements.settingsStatus.className = 'settings-status';
+    elements.recordShortcut.focus();
+  }
+
+  function stopShortcutCapture({ restore = false } = {}) {
+    isCapturingRecordShortcut = false;
+    elements.recordShortcut.classList.remove('capturing');
+    elements.recordShortcut.blur();
+    if (restore) {
+      elements.recordShortcut.value = previousRecordShortcut;
+    }
+  }
+
+  function isRecordShortcutEvent(key) {
+    return normalizeShortcutKey(key) === state.config.recordShortcut;
+  }
+
+  function beginShortcutPress(shortcutKey) {
+    resetShortcutPress();
+    state.shortcutPress.isDown = true;
+    state.shortcutPress.key = shortcutKey;
+    state.shortcutPress.startedAt = Date.now();
+    state.shortcutPress.holdTimerId = setTimeout(() => {
+      if (!state.shortcutPress.isDown || state.shortcutPress.key !== shortcutKey) {
+        return;
+      }
+      state.shortcutPress.isHoldMode = true;
+      setRecordingMode('hold');
+    }, SHORTCUT_HOLD_THRESHOLD_MS);
+  }
+
   // 设置面板切换
   elements.settingsToggle.addEventListener('click', () => {
     const isHidden = elements.settingsPanel.hidden;
@@ -937,31 +1117,131 @@ function bindEvents() {
   });
 
   // 保存设置
-  elements.settingsSave.addEventListener('click', saveConfig);
+  elements.settingsSave.addEventListener('click', async () => {
+    stopShortcutCapture();
+    await saveConfig();
+  });
+
+  elements.recordShortcut.addEventListener('click', startShortcutCapture);
+  elements.recordShortcut.addEventListener('focus', startShortcutCapture);
+
+  elements.recordShortcut.addEventListener('blur', () => {
+    if (!isCapturingRecordShortcut) {
+      return;
+    }
+
+    stopShortcutCapture({ restore: true });
+  });
 
   // 开始录音
-  elements.startBtn.addEventListener('click', startRecording);
+  elements.startBtn.addEventListener('click', () => {
+    resetShortcutPress();
+    startRecording('button');
+  });
 
   // 停止录音
-  elements.stopBtn.addEventListener('click', stopRecording);
+  elements.stopBtn.addEventListener('click', () => {
+    resetShortcutPress();
+    stopRecording();
+  });
 
-  // F6 切换录音开始/结束
   window.addEventListener('keydown', (e) => {
-    if (e.key !== 'F6' || e.repeat) {
+    if (isCapturingRecordShortcut) {
+      e.preventDefault();
+      e.stopPropagation();
+
+      if (e.key === 'Escape') {
+        stopShortcutCapture({ restore: true });
+        elements.settingsStatus.textContent = '已取消快捷键修改';
+        return;
+      }
+
+      if (e.repeat) {
+        return;
+      }
+
+      const shortcut = normalizeShortcutKey(e.key);
+      elements.recordShortcut.value = shortcut;
+      stopShortcutCapture();
+      elements.settingsStatus.textContent = `当前待保存快捷键：${shortcut}`;
+      return;
+    }
+
+    if (e.repeat) {
+      return;
+    }
+
+    if (isTypingTarget(e.target)) {
+      return;
+    }
+
+    if (!isRecordShortcutEvent(e.key)) {
       return;
     }
 
     e.preventDefault();
-    if (state.isRecording) {
+
+    if (state.shortcutPress.isDown) {
+      return;
+    }
+
+    const shortcutKey = normalizeShortcutKey(e.key);
+
+    if (state.isRecording && state.recordingMode === 'toggle') {
+      state.shortcutPress.suppressKeyup = true;
       stopRecording();
-    } else {
-      startRecording();
+      return;
+    }
+
+    if (state.recordingPhase !== 'idle') {
+      return;
+    }
+
+    beginShortcutPress(shortcutKey);
+    startRecording('toggle');
+  });
+
+  window.addEventListener('keyup', (e) => {
+    if (!isRecordShortcutEvent(e.key)) {
+      return;
+    }
+
+    if (state.shortcutPress.suppressKeyup) {
+      resetShortcutPress();
+      return;
+    }
+
+    if (!state.shortcutPress.isDown) {
+      return;
+    }
+
+    e.preventDefault();
+
+    const releasedKey = normalizeShortcutKey(e.key);
+    if (state.shortcutPress.key !== releasedKey) {
+      return;
+    }
+
+    const shouldStopOnRelease = state.shortcutPress.isHoldMode;
+    resetShortcutPress();
+
+    if (shouldStopOnRelease && (state.recordingPhase === 'starting' || state.recordingPhase === 'recording')) {
+      stopRecording();
+    }
+  });
+
+  window.addEventListener('blur', () => {
+    const shouldStopOnBlur = state.shortcutPress.isHoldMode && (state.recordingPhase === 'starting' || state.recordingPhase === 'recording');
+    resetShortcutPress();
+    if (shouldStopOnBlur) {
+      stopRecording();
     }
   });
 
   // 清空对话
   elements.clearBtn.addEventListener('click', () => {
     clearSilenceTimer();
+    resetShortcutPress();
     state.conversationHistory = [];
     state.currentAssistantMessage = null;
     state.isAwaitingFinalAsr = false;
@@ -1006,7 +1286,7 @@ async function init() {
   });
 
   updateStatus('就绪');
-  appendMessage('system', '欢迎使用豆包语音对话！请点击“开始录音”按钮或按 F6。');
+  appendMessage('system', '欢迎使用豆包语音对话！请点击“开始录音”按钮，或使用设置中的录音快捷键。');
 
   console.log('[App] 初始化完成');
 }
