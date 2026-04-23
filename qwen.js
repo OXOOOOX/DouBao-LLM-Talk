@@ -8,6 +8,7 @@ export class QwenClient {
     this.apiKey = config.apiKey || '';
     this.model = config.model || 'qwen-max';
     this.baseUrl = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
+    this.abortController = null;
   }
 
   setApiKey(apiKey) {
@@ -16,6 +17,13 @@ export class QwenClient {
 
   setModel(model) {
     this.model = model;
+  }
+
+  stop() {
+    if (this.abortController) {
+      this.abortController.abort();
+      this.abortController = null;
+    }
   }
 
   /**
@@ -29,6 +37,8 @@ export class QwenClient {
       throw new Error('Qwen API Key 未设置');
     }
 
+    this.abortController = new AbortController();
+
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -39,7 +49,8 @@ export class QwenClient {
         model: this.model,
         messages: messages,
         stream: true
-      })
+      }),
+      signal: this.abortController.signal
     });
 
     if (!response.ok) {

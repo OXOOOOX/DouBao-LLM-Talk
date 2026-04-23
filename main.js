@@ -442,8 +442,18 @@ function handleAsrText(data) {
 
 // ==================== 对话处理 ====================
 
+// 记录当前处理的请求ID，防止并发打断时的状态冲突
+let currentProcessId = 0;
+
 async function handleUserMessage(text) {
-  if (state.isProcessing) return;
+  const processId = ++currentProcessId;
+
+  if (state.isProcessing) {
+    console.log('[App] 收到新输入，打断当前输出');
+    stopCurrentOutput();
+    // 稍微等待一下前一个异步流程清理完毕
+    await sleep(100);
+  }
 
   state.isProcessing = true;
   state.timers.asrComplete = Date.now();
@@ -501,14 +511,20 @@ async function handleUserMessage(text) {
     await endTTSStream();
 
   } catch (error) {
+    if (error.name === 'AbortError' || processId !== currentProcessId) {
+      console.log('[App] 流程被打断');
+      return;
+    }
     console.error('[Qwen] 错误:', error);
     updateAssistantMessage('抱歉，出错了：' + error.message);
     // 出错时清理 TTS
     cleanupTTS();
   } finally {
-    state.isProcessing = false;
-    resetConversationTimers();
-    updateStatus('就绪');
+    if (processId === currentProcessId) {
+      state.isProcessing = false;
+      resetConversationTimers();
+      updateStatus('就绪');
+    }
   }
 }
 
