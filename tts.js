@@ -213,7 +213,7 @@ export class TTSClient {
     this.apiKey = config.apiKey;
     this.resourceId = config.resourceId || 'seed-tts-2.0';
     this.voiceType = config.voiceType || 'zh_female_vv_uranus_bigtts';
-    this.proxyUrl = config.proxyUrl || `ws://${window.location.host}/proxy`;
+    this.proxyUrl = config.proxyUrl || `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/proxy`;
 
     this.ws = null;
     this.connectId = `${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;

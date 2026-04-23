@@ -919,7 +919,8 @@ export class DoubaoClient {
    * 构建 WebSocket 连接 URL
    */
   buildUrl() {
-    const baseUrl = this.proxyUrl || `ws://${window.location.host}/proxy`;
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const baseUrl = this.proxyUrl || `${protocol}//${window.location.host}/proxy`;
     return baseUrl;
   }
 
