@@ -108,6 +108,15 @@ function updateAssistantMessage(content) {
   }
 }
 
+function getSentenceDisplayText(content, flush = false) {
+  if (flush) {
+    return content;
+  }
+
+  const { sentences } = extractCompleteSentences(content);
+  return sentences.join('');
+}
+
 function setLatency(label, value) {
   const current = elements.latencyText.textContent;
   const parts = current ? current.split(' | ') : [];
@@ -241,8 +250,14 @@ async function startRecording() {
   // 先重新加载配置，确保使用最新的配置
   await loadConfig();
 
-  // 打断当前输出
-  stopCurrentOutput();
+  // 开始录音时只打断 TTS，不打断 LLM 输出
+  clearSilenceTimer();
+  if (state.isPlaying || state.ttsClient) {
+    stopTTS();
+  }
+  currentRealtimeText = '';
+  lastDefiniteText = '';
+  pendingAsrFinalText = '';
 
   state.timers.start = Date.now();
   clearLatency();
@@ -305,16 +320,18 @@ async function startRecording() {
 
     state.asrClient.onError = (error) => {
       console.error('[ASR] 错误:', error);
+      clearSilenceTimer();
       state.isAwaitingFinalAsr = false;
       updateStatus('ASR 错误');
       appendMessage('system', 'ASR 连接失败，请检查配置和网络');
     };
 
-    state.asrClient.onClose = () => {
+    state.asrClient.onClose = async () => {
       console.log('[ASR] 连接关闭');
-      state.isAwaitingFinalAsr = false;
+      clearSilenceTimer();
       state.asrClient = null;
-      if (!state.isProcessing) {
+      const submitted = await submitPendingAsrText();
+      if (!submitted && !state.isProcessing) {
         updateStatus('就绪');
       }
     };
@@ -352,16 +369,15 @@ function stopRecording() {
     return;
   }
 
+  clearSilenceTimer();
   state.isRecording = false;
   state.isAwaitingFinalAsr = Boolean(state.asrClient?.isConnected);
   updateStatus(state.isAwaitingFinalAsr || state.isProcessing ? '处理中...' : '就绪');
 
-  // 发送结束帧
   if (state.asrClient?.isConnected) {
     state.asrClient.sendEndRequest();
   }
 
-  // 停止音频处理
   if (state.scriptProcessor) {
     state.scriptProcessor.disconnect();
     state.scriptProcessor.onaudioprocess = null;
@@ -383,10 +399,14 @@ function stopRecording() {
 }
 
 function stopCurrentOutput() {
+  clearSilenceTimer();
   state.isSpeaking = false;
   state.isProcessing = false;
   state.isAwaitingFinalAsr = false;
   state.currentAssistantMessage = null;
+  currentRealtimeText = '';
+  lastDefiniteText = '';
+  pendingAsrFinalText = '';
   resetConversationTimers();
 
   // 停止 TTS
@@ -402,10 +422,69 @@ function stopCurrentOutput() {
 
 // ==================== ASR 处理 ====================
 
+const SILENCE_AUTO_SUBMIT_MS = 3000;
+
 let currentRealtimeText = '';
 let lastDefiniteText = '';
+let pendingAsrFinalText = '';
+let silenceTimerId = null;
+let lastAsrActivityAt = 0;
 
-function handleAsrText(data) {
+function clearSilenceTimer() {
+  if (silenceTimerId) {
+    clearTimeout(silenceTimerId);
+    silenceTimerId = null;
+  }
+}
+
+function armSilenceTimer() {
+  if (!state.isRecording || state.isProcessing || !currentRealtimeText.trim()) {
+    return;
+  }
+
+  clearSilenceTimer();
+  lastAsrActivityAt = Date.now();
+  silenceTimerId = setTimeout(async () => {
+    if (!state.isRecording || state.isProcessing) {
+      return;
+    }
+
+    if (Date.now() - lastAsrActivityAt < SILENCE_AUTO_SUBMIT_MS) {
+      return;
+    }
+
+    await finalizeRecordingFromSilence();
+  }, SILENCE_AUTO_SUBMIT_MS);
+}
+
+async function finalizeRecordingFromSilence() {
+  if (!state.isRecording || state.isProcessing || !currentRealtimeText.trim()) {
+    return false;
+  }
+
+  updateStatus('处理中...');
+  stopRecording();
+  return true;
+}
+
+async function submitPendingAsrText() {
+  if (state.isRecording || state.isProcessing) {
+    return false;
+  }
+
+  const text = (pendingAsrFinalText || lastDefiniteText || currentRealtimeText).trim();
+  pendingAsrFinalText = '';
+  state.isAwaitingFinalAsr = false;
+
+  if (!text) {
+    return false;
+  }
+
+  await handleUserMessage(text);
+  return true;
+}
+
+async function handleAsrText(data) {
   // data 结构可能为：
   // { result: { text: "..." }, is_final: true/false }
   // 或 { text: "...", is_definite: true }
@@ -414,30 +493,31 @@ function handleAsrText(data) {
   const text = data.result?.text || data.text || '';
   const isFinal = data.is_final || data.is_definite || false;
 
-  if (text) {
-    if (isFinal) {
-      // 最终识别结果（累积文本）
-      currentRealtimeText = text;
-      elements.realtimeText.textContent = text;
+  if (!text) {
+    return;
+  }
 
-      if (text !== lastDefiniteText && text.trim()) {
-        // 提取新增部分：如果新文本以旧文本开头，只取新增的部分
-        let newText = text;
-        if (lastDefiniteText && text.startsWith(lastDefiniteText)) {
-          newText = text.substring(lastDefiniteText.length).trim();
-        }
-        lastDefiniteText = text;
-        state.isAwaitingFinalAsr = false;
+  currentRealtimeText = text;
 
-        if (newText.trim()) {
-          handleUserMessage(newText);
-        }
+  if (state.isRecording && !state.isProcessing) {
+    armSilenceTimer();
+  }
+
+  if (isFinal) {
+    // 最终识别结果（累积文本）
+    elements.realtimeText.textContent = text;
+
+    if (text !== lastDefiniteText && text.trim()) {
+      lastDefiniteText = text;
+      pendingAsrFinalText = text;
+
+      if (!state.isRecording) {
+        await submitPendingAsrText();
       }
-    } else {
-      // 中间识别结果
-      currentRealtimeText = text;
-      elements.realtimeText.textContent = text + '...';
     }
+  } else {
+    // 中间识别结果
+    elements.realtimeText.textContent = text + '...';
   }
 }
 
@@ -447,6 +527,7 @@ function handleAsrText(data) {
 let currentProcessId = 0;
 
 async function handleUserMessage(text) {
+  clearSilenceTimer();
   const processId = ++currentProcessId;
 
   if (state.isProcessing) {
@@ -485,10 +566,16 @@ async function handleUserMessage(text) {
     await startTTSStream();
 
     let fullResponse = '';
+    let displayedResponse = '';
 
     await state.qwenClient.chat(state.conversationHistory, (chunk, full) => {
       fullResponse = full;
-      updateAssistantMessage(full);
+
+      const sentenceDisplayText = getSentenceDisplayText(full);
+      if (sentenceDisplayText !== displayedResponse) {
+        displayedResponse = sentenceDisplayText;
+        updateAssistantMessage(sentenceDisplayText || '...');
+      }
 
       if (state.timers.qwenFirstToken === 0) {
         state.timers.qwenFirstToken = Date.now();
@@ -499,6 +586,8 @@ async function handleUserMessage(text) {
       // 流式将完整句子喂给 TTS
       feedTTSFromStream(full);
     });
+
+    updateAssistantMessage(getSentenceDisplayText(fullResponse, true));
 
     state.timers.qwenComplete = Date.now();
     setLatency('Qwen 完成', Date.now() - state.timers.qwenFirstToken);
@@ -856,13 +945,29 @@ function bindEvents() {
   // 停止录音
   elements.stopBtn.addEventListener('click', stopRecording);
 
+  // F6 切换录音开始/结束
+  window.addEventListener('keydown', (e) => {
+    if (e.key !== 'F6' || e.repeat) {
+      return;
+    }
+
+    e.preventDefault();
+    if (state.isRecording) {
+      stopRecording();
+    } else {
+      startRecording();
+    }
+  });
+
   // 清空对话
   elements.clearBtn.addEventListener('click', () => {
+    clearSilenceTimer();
     state.conversationHistory = [];
     state.currentAssistantMessage = null;
     state.isAwaitingFinalAsr = false;
     lastDefiniteText = '';
     currentRealtimeText = '';
+    pendingAsrFinalText = '';
     resetConversationTimers();
     elements.chatMessages.innerHTML = '';
     elements.realtimeText.textContent = '';
@@ -901,7 +1006,7 @@ async function init() {
   });
 
   updateStatus('就绪');
-  appendMessage('system', '欢迎使用豆包语音对话！请点击"开始录音"按钮。');
+  appendMessage('system', '欢迎使用豆包语音对话！请点击“开始录音”按钮或按 F6。');
 
   console.log('[App] 初始化完成');
 }
