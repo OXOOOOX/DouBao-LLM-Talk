@@ -21,7 +21,7 @@ const state = {
     volcTtsResourceId: 'seed-tts-2.0',
     volcTtsVoice: 'zh_female_vv_uranus_bigtts',
     recordShortcut: 'F6',
-    volcProxyUrl: `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/proxy`
+    volcProxyUrl: getDefaultProxyUrl()
   },
 
   // 录音状态
@@ -243,6 +243,40 @@ function setSettingsPanelVisible(visible) {
 
 const DEFAULT_CHAT_SYSTEM_PROMPT = '你是一个对话聊天助手。回复简要，优先通过多轮询问逐步澄清用户需求，不要使用 markdown 格式。';
 
+function getDefaultProxyUrl() {
+  return `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/proxy`;
+}
+
+function sanitizeProxyUrl(proxyUrl) {
+  if (!proxyUrl) return '';
+
+  try {
+    const currentProtocol = window.location.protocol;
+    const defaultProxyUrl = getDefaultProxyUrl();
+    const url = new URL(proxyUrl, window.location.href);
+    const hostname = (url.hostname || '').toLowerCase();
+    const isLoopback = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+    const isPrivateIpv4 = /^10\.|^192\.168\.|^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname);
+
+    if (isLoopback || isPrivateIpv4) {
+      return defaultProxyUrl;
+    }
+
+    if (currentProtocol === 'https:' && url.protocol !== 'wss:') {
+      return defaultProxyUrl;
+    }
+
+    if (currentProtocol === 'http:' && !['ws:', 'wss:'].includes(url.protocol)) {
+      return defaultProxyUrl;
+    }
+
+    return `${url.protocol}//${url.host}${url.pathname}${url.search}`;
+  } catch (error) {
+    console.warn('[Config] 代理地址无效，回退同域 /proxy:', proxyUrl, error);
+    return getDefaultProxyUrl();
+  }
+}
+
 // ==================== 配置管理 ====================
 
 async function loadConfig() {
@@ -256,7 +290,10 @@ async function loadConfig() {
     if (response.ok) {
       const data = await response.json();
       if (data.config) {
-        if (!data.config.volcProxyUrl) {
+        const sanitizedProxyUrl = sanitizeProxyUrl(data.config.volcProxyUrl);
+        if (sanitizedProxyUrl) {
+          data.config.volcProxyUrl = sanitizedProxyUrl;
+        } else {
           delete data.config.volcProxyUrl;
         }
         state.config = { ...state.config, ...data.config };
@@ -835,6 +872,13 @@ async function startTTSStream() {
 
   // 初始化 AudioContext
   state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  if (state.audioContext.state === 'suspended') {
+    try {
+      await state.audioContext.resume();
+    } catch (error) {
+      console.warn('[TTS] AudioContext resume 失败:', error);
+    }
+  }
 
   // 设置音频回调 - 累积音频块
   state.ttsClient.onAudio = (audioData) => {

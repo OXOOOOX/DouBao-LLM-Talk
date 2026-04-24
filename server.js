@@ -134,6 +134,43 @@ async function readEnvFile() {
 /**
  * 将.env 内容映射到配置对象
  */
+function getDefaultProxyUrl(req) {
+  const host = req.headers.host || 'localhost';
+  const forwardedProto = (req.headers['x-forwarded-proto'] || '').toString().split(',')[0].trim();
+  const isHttps = forwardedProto ? forwardedProto === 'https' : host !== 'localhost' && !/^127(?:\.\d{1,3}){3}(?::\d+)?$/.test(host);
+  const protocol = isHttps ? 'wss:' : 'ws:';
+  return `${protocol}//${host}/proxy`;
+}
+
+function sanitizeServerProxyUrl(proxyUrl, req) {
+  if (!proxyUrl) return '';
+
+  try {
+    const defaultProxyUrl = getDefaultProxyUrl(req);
+    const url = new URL(proxyUrl, `${req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http'}://${req.headers.host || 'localhost'}`);
+    const hostname = (url.hostname || '').toLowerCase();
+    const isLoopback = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+    const isPrivateIpv4 = /^10\.|^192\.168\.|^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname);
+
+    if (isLoopback || isPrivateIpv4) {
+      return defaultProxyUrl;
+    }
+
+    if ((req.headers['x-forwarded-proto'] || '').toString().includes('https') && url.protocol !== 'wss:') {
+      return defaultProxyUrl;
+    }
+
+    if (!['ws:', 'wss:'].includes(url.protocol)) {
+      return defaultProxyUrl;
+    }
+
+    return `${url.protocol}//${url.host}${url.pathname}${url.search}`;
+  } catch (error) {
+    console.warn('[Config] 服务端代理地址无效，回退同域 /proxy:', proxyUrl, error);
+    return getDefaultProxyUrl(req);
+  }
+}
+
 function mapEnvToConfig(envText) {
   const config = { ...DEFAULT_CONFIG };
   const lines = envText.split(/\r?\n/);
@@ -190,7 +227,9 @@ function mapEnvToConfig(envText) {
 async function handleConfigRequest(req, res) {
   if (req.method === 'GET') {
     const envText = await readEnvFile();
-    sendJson(req, res, 200, { config: mapEnvToConfig(envText) });
+    const config = mapEnvToConfig(envText);
+    config.volcProxyUrl = sanitizeServerProxyUrl(config.volcProxyUrl, req);
+    sendJson(req, res, 200, { config });
     return;
   }
 
