@@ -84,6 +84,8 @@ const elements = {
   startBtn: document.getElementById('start-btn'),
   stopBtn: document.getElementById('stop-btn'),
   clearBtn: document.getElementById('clear-btn'),
+  textInput: document.getElementById('text-input'),
+  textSend: document.getElementById('text-send-btn'),
   modelSelect: document.getElementById('model-select'),
   voiceSelect: document.getElementById('voice-select'),
   chatMessages: document.getElementById('chat-messages'),
@@ -849,14 +851,13 @@ async function handleAsrText(data) {
 // 记录当前处理的请求ID，防止并发打断时的状态冲突
 let currentProcessId = 0;
 
-async function handleUserMessage(text) {
+async function runQwenTurn(text, { speak = false, latencyStartLabel = '识别完成' } = {}) {
   clearSilenceTimer();
   const processId = ++currentProcessId;
 
   if (state.isProcessing) {
     console.log('[App] 收到新输入，打断当前输出');
     stopCurrentOutput();
-    // 稍微等待一下前一个异步流程清理完毕
     await sleep(100);
   }
 
@@ -865,19 +866,14 @@ async function handleUserMessage(text) {
   state.timers.qwenFirstToken = 0;
   state.timers.qwenComplete = 0;
   state.timers.ttsStart = 0;
-  setLatency('识别完成', Date.now() - state.timers.start);
+  setLatency(latencyStartLabel, Date.now() - state.timers.start);
 
-  // 添加用户消息
   appendMessage('user', text);
   state.conversationHistory.push({ role: 'user', content: text });
-
-  // 创建助手消息占位
   state.currentAssistantMessage = appendMessage('assistant', '...');
-
   updateStatus('思考中...');
 
   try {
-    // 创建 Qwen 客户端
     if (!state.qwenClient) {
       state.qwenClient = new QwenClient({
         apiKey: state.config.qwenApiKey,
@@ -885,8 +881,9 @@ async function handleUserMessage(text) {
       });
     }
 
-    // 先建立 TTS 连接，这样 LLM 一出文字就能立刻送入 TTS
-    await startTTSStream();
+    if (speak) {
+      await startTTSStream();
+    }
 
     let fullResponse = '';
     let displayedResponse = '';
@@ -899,35 +896,35 @@ async function handleUserMessage(text) {
     await state.qwenClient.chat(messages, (chunk, full) => {
       fullResponse = full;
 
-      const sentenceDisplayText = getSentenceDisplayText(full);
-      if (sentenceDisplayText !== displayedResponse) {
-        displayedResponse = sentenceDisplayText;
-        updateAssistantMessage(sentenceDisplayText || '...');
+      const displayText = speak ? getSentenceDisplayText(full) : full;
+      if (displayText !== displayedResponse) {
+        displayedResponse = displayText;
+        updateAssistantMessage(displayText || '...');
       }
 
       if (state.timers.qwenFirstToken === 0) {
         state.timers.qwenFirstToken = Date.now();
         setLatency('首字', Date.now() - state.timers.asrComplete);
-        updateStatus('TTS 播报中...');
+        updateStatus(speak ? 'TTS 播报中...' : '回复中...');
       }
 
-      // 流式将完整句子喂给 TTS
-      feedTTSFromStream(full);
+      if (speak) {
+        feedTTSFromStream(full);
+      }
     });
 
-    updateAssistantMessage(getSentenceDisplayText(fullResponse, true));
+    updateAssistantMessage(fullResponse);
 
     state.timers.qwenComplete = Date.now();
     setLatency('Qwen 完成', Date.now() - state.timers.qwenFirstToken);
 
-    // 保存助手回复到历史
     state.conversationHistory.push({ role: 'assistant', content: fullResponse });
     state.currentAssistantMessage = null;
 
-    // LLM 输出完毕，发送剩余文本并等待 TTS 播放完成
-    console.log('[Pipeline] LLM 完成，等待 TTS 播放完成');
-    await endTTSStream();
-
+    if (speak) {
+      console.log('[Pipeline] LLM 完成，等待 TTS 播放完成');
+      await endTTSStream();
+    }
   } catch (error) {
     if (error.name === 'AbortError' || processId !== currentProcessId) {
       console.log('[App] 流程被打断');
@@ -935,7 +932,6 @@ async function handleUserMessage(text) {
     }
     console.error('[Qwen] 错误:', error);
     updateAssistantMessage('抱歉，出错了：' + error.message);
-    // 出错时清理 TTS
     cleanupTTS();
   } finally {
     if (processId === currentProcessId) {
@@ -943,6 +939,33 @@ async function handleUserMessage(text) {
       resetConversationTimers();
       updateStatus('就绪');
     }
+  }
+}
+
+async function handleUserMessage(text) {
+  await runQwenTurn(text, { speak: true, latencyStartLabel: '识别完成' });
+}
+
+async function handleTextMessage() {
+  const text = elements.textInput.value.trim();
+  if (!text || state.isProcessing) return;
+
+  elements.textSend.disabled = true;
+  await loadConfig();
+  if (!state.config.qwenApiKey) {
+    elements.textSend.disabled = false;
+    updateStatus('错误：请先配置 Qwen API Key');
+    appendMessage('system', '请先在设置中配置 Qwen API Key');
+    return;
+  }
+
+  elements.textInput.value = '';
+  clearLatency();
+  state.timers.start = Date.now();
+  try {
+    await runQwenTurn(text, { speak: false, latencyStartLabel: '文字提交' });
+  } finally {
+    elements.textSend.disabled = false;
   }
 }
 
@@ -1453,6 +1476,17 @@ function bindEvents() {
     resetShortcutPress();
     if (shouldStopOnBlur) {
       stopRecording();
+    }
+  });
+
+  elements.textSend.addEventListener('click', () => {
+    handleTextMessage();
+  });
+
+  elements.textInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleTextMessage();
     }
   });
 

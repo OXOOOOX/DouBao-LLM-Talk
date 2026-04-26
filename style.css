@@ -262,6 +262,20 @@ button:disabled {
   background: #ffffff;
 }
 
+.text-chat {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 160px;
+  gap: 10px;
+  align-items: end;
+}
+
+.text-chat-input textarea {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
 .chat-container {
   min-height: 400px;
   max-height: 55vh;
@@ -422,7 +436,8 @@ button:disabled {
     height: 40px;
   }
 
-  .controls {
+  .controls,
+  .text-chat {
     grid-template-columns: 1fr;
   }
 
