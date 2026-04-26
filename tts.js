@@ -35,6 +35,11 @@ const EVT_TTS_SENTENCE_START = 350;
 const EVT_TTS_SENTENCE_END = 351;
 const EVT_TTS_RESPONSE = 352;
 
+function createTtsConfigError(detail = '') {
+  const suffix = detail ? `原始错误：${detail}` : '请查看控制台或 Zeabur 日志获取原始错误。';
+  return new Error(`TTS 配置或接口调用失败，请检查火山 TTS API Key、Resource ID、音色和服务额度。${suffix}`);
+}
+
 /**
  * Build a binary frame for V3 TTS bidirectional protocol.
  *
@@ -307,7 +312,7 @@ export class TTSClient {
       const connectionTimeout = setTimeout(() => {
         if (!this.connectionResolved) {
           this.connectionResolved = true;
-          reject(new Error('TTS 连接超时'));
+          reject(createTtsConfigError('连接超时，可能是 TTS 鉴权失败或上游接口无响应。'));
         }
       }, 10000);
 
@@ -332,9 +337,15 @@ export class TTSClient {
         // 错误处理
         if (parsed.messageType === MSG_SERVER_ERROR) {
           const errorMsg = new TextDecoder().decode(parsed.payload);
+          const error = createTtsConfigError(`TTS 错误 ${parsed.errorCode}: ${errorMsg}`);
           console.error('[TTS] 服务端错误:', parsed.errorCode, errorMsg);
+          if (!this.connectionResolved) {
+            this.connectionResolved = true;
+            clearTimeout(connectionTimeout);
+            reject(error);
+          }
           if (this.onError) {
-            this.onError(new Error(`TTS 错误 ${parsed.errorCode}: ${errorMsg}`));
+            this.onError(error);
           }
           return;
         }
@@ -383,6 +394,11 @@ export class TTSClient {
         this.isConnected = false;
         this.isSessionActive = false;
         this.ws = null;
+        if (!this.connectionResolved) {
+          this.connectionResolved = true;
+          clearTimeout(connectionTimeout);
+          reject(createTtsConfigError(`连接提前关闭${event.reason ? `：${event.reason}` : ''}`));
+        }
         if (this.onClose) this.onClose(event);
       };
 

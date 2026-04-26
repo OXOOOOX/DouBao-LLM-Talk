@@ -255,6 +255,11 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (requestUrl.pathname === '/api/ping') {
+    sendJson(req, res, 200, { ok: true, timestamp: Date.now() });
+    return;
+  }
+
   // /config 路由
   if (requestUrl.pathname === '/config' || requestUrl.pathname === '/api/config') {
     if (!isAllowedOrigin(req.headers.origin)) {

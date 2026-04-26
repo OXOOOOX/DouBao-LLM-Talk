@@ -77,6 +77,9 @@ const elements = {
   settingsPanel: document.getElementById('settings-panel'),
   settingsSave: document.getElementById('settings-save-btn'),
   settingsClearCache: document.getElementById('settings-clear-cache-btn'),
+  settingsTestQwen: document.getElementById('settings-test-qwen-btn'),
+  settingsTestAsr: document.getElementById('settings-test-asr-btn'),
+  settingsTestTts: document.getElementById('settings-test-tts-btn'),
   settingsStatus: document.getElementById('settings-status'),
   startBtn: document.getElementById('start-btn'),
   stopBtn: document.getElementById('stop-btn'),
@@ -85,6 +88,7 @@ const elements = {
   voiceSelect: document.getElementById('voice-select'),
   chatMessages: document.getElementById('chat-messages'),
   statusText: document.getElementById('status-text'),
+  proxyLatencyText: document.getElementById('proxy-latency-text'),
   latencyText: document.getElementById('latency-text'),
   realtimeText: document.getElementById('realtime-text'),
 
@@ -149,6 +153,26 @@ function setLatency(label, value) {
 
 function clearLatency() {
   elements.latencyText.textContent = '';
+}
+
+async function updateProxyLatency() {
+  const start = performance.now();
+  try {
+    const response = await fetch(`/api/ping?t=${Date.now()}`, { cache: 'no-store' });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    await response.json();
+    elements.proxyLatencyText.textContent = `代理延迟: ${Math.round(performance.now() - start)}ms`;
+  } catch (error) {
+    elements.proxyLatencyText.textContent = '代理延迟: 连接失败';
+    console.warn('[Proxy] 延迟测试失败:', error);
+  }
+}
+
+function startProxyLatencyMonitor() {
+  updateProxyLatency();
+  setInterval(updateProxyLatency, 30000);
 }
 
 function resetConversationTimers() {
@@ -388,6 +412,110 @@ async function clearLocalConfig() {
 
   elements.settingsStatus.textContent = '本地缓存已清除';
   elements.settingsStatus.className = 'settings-status';
+}
+
+function readSettingsFormConfig() {
+  return {
+    qwenApiKey: elements.qwenApiKey.value.trim(),
+    qwenModel: elements.qwenModel.value,
+    volcAppKey: elements.volcAppKey.value.trim(),
+    volcAccessKey: elements.volcAccessKey.value.trim(),
+    volcApiKey: elements.volcApiKey.value.trim(),
+    volcResourceId: state.config.volcResourceId,
+    volcTtsResourceId: state.config.volcTtsResourceId,
+    volcTtsVoice: elements.volcTtsVoice.value,
+    volcProxyUrl: state.config.volcProxyUrl || getDefaultProxyUrl()
+  };
+}
+
+function setSettingsStatus(message, isError = false) {
+  elements.settingsStatus.textContent = message;
+  elements.settingsStatus.className = isError ? 'settings-status error' : 'settings-status';
+}
+
+async function withTestButton(button, loadingText, testFn) {
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = loadingText;
+  try {
+    await testFn();
+  } catch (error) {
+    console.error('[Settings] 测试失败:', error);
+    setSettingsStatus(error.message || '测试失败', true);
+  } finally {
+    button.disabled = false;
+    button.textContent = originalText;
+  }
+}
+
+async function testQwenConfig() {
+  await withTestButton(elements.settingsTestQwen, '测试中...', async () => {
+    const config = readSettingsFormConfig();
+    if (!config.qwenApiKey) {
+      throw new Error('请先填写 Qwen API Key');
+    }
+
+    setSettingsStatus('正在测试 Qwen...');
+    const client = new QwenClient({ apiKey: config.qwenApiKey, model: config.qwenModel });
+    const reply = await client.chat([
+      { role: 'system', content: '只回复 ok。' },
+      { role: 'user', content: 'ping' }
+    ]);
+
+    if (!reply.trim()) {
+      throw new Error('Qwen 返回为空，请检查 API Key 或模型权限');
+    }
+
+    setSettingsStatus('Qwen 测试通过');
+  });
+}
+
+async function testAsrConfig() {
+  await withTestButton(elements.settingsTestAsr, '测试中...', async () => {
+    const config = readSettingsFormConfig();
+    if (!config.volcAppKey || !config.volcAccessKey) {
+      throw new Error('请先填写 ASR App Key 和 Access Key');
+    }
+
+    setSettingsStatus('正在测试 ASR...');
+    const client = new DoubaoClient({
+      appKey: config.volcAppKey,
+      accessKey: config.volcAccessKey,
+      resourceId: config.volcResourceId,
+      proxyUrl: config.volcProxyUrl
+    });
+
+    try {
+      await client.connect();
+      setSettingsStatus('ASR 连接测试通过');
+    } finally {
+      client.close();
+    }
+  });
+}
+
+async function testTtsConfig() {
+  await withTestButton(elements.settingsTestTts, '测试中...', async () => {
+    const config = readSettingsFormConfig();
+    if (!config.volcApiKey) {
+      throw new Error('请先填写 TTS API Key');
+    }
+
+    setSettingsStatus('正在测试 TTS...');
+    const client = new TTSClient({
+      apiKey: config.volcApiKey,
+      resourceId: config.volcTtsResourceId,
+      voiceType: config.volcTtsVoice,
+      proxyUrl: config.volcProxyUrl
+    });
+
+    try {
+      await client.connect();
+      setSettingsStatus('TTS 测试通过');
+    } finally {
+      client.close();
+    }
+  });
 }
 
 // ==================== 录音控制 ====================
@@ -1197,6 +1325,21 @@ function bindEvents() {
     await clearLocalConfig();
   });
 
+  elements.settingsTestQwen.addEventListener('click', () => {
+    stopShortcutCapture({ restore: true });
+    testQwenConfig();
+  });
+
+  elements.settingsTestAsr.addEventListener('click', () => {
+    stopShortcutCapture({ restore: true });
+    testAsrConfig();
+  });
+
+  elements.settingsTestTts.addEventListener('click', () => {
+    stopShortcutCapture({ restore: true });
+    testTtsConfig();
+  });
+
   elements.recordShortcut.addEventListener('click', startShortcutCapture);
   elements.recordShortcut.addEventListener('focus', startShortcutCapture);
 
@@ -1353,6 +1496,7 @@ async function init() {
   bindEvents();
   setSettingsPanelVisible(false);
   resetConversationTimers();
+  startProxyLatencyMonitor();
   await loadConfig();
 
   // 初始化 Qwen 客户端

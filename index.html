@@ -40,6 +40,9 @@
               <option value="qwen-turbo">qwen-turbo</option>
             </select>
           </label>
+          <button id="settings-test-qwen-btn" class="btn btn-secondary" type="button">
+            <span>测试 Qwen</span>
+          </button>
         </div>
 
         <div class="settings-section">
@@ -67,6 +70,14 @@
               <option value="zh_female_shuangkuaisisi_moon_bigtts">双快思思</option>
             </select>
           </label>
+          <div class="settings-test-actions">
+            <button id="settings-test-asr-btn" class="btn btn-secondary" type="button">
+              <span>测试 ASR</span>
+            </button>
+            <button id="settings-test-tts-btn" class="btn btn-secondary" type="button">
+              <span>测试 TTS</span>
+            </button>
+          </div>
           <label class="input-group">
             <span>录音快捷键</span>
             <input id="settings-record-shortcut" type="text" readonly placeholder="点击后按一个键">
@@ -121,6 +132,7 @@
 
     <div id="status-bar" class="status-bar panel">
       <span id="status-text">就绪</span>
+      <div id="proxy-latency-text" class="proxy-latency-text">代理延迟: 测试中...</div>
       <div id="latency-text" class="latency-text"></div>
     </div>
 
