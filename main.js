@@ -20,6 +20,7 @@ const state = {
     volcResourceId: 'volc.seedasr.sauc.duration',
     volcTtsResourceId: 'seed-tts-2.0',
     volcTtsVoice: 'zh_female_vv_uranus_bigtts',
+    asrProvider: 'doubao',
     recordShortcut: 'F6',
     volcProxyUrl: getDefaultProxyUrl()
   },
@@ -41,6 +42,7 @@ const state = {
   audioContext: null,
   mediaStream: null,
   scriptProcessor: null,
+  localRecognition: null,
 
   // 客户端实例
   asrClient: null,
@@ -50,7 +52,6 @@ const state = {
   // TTS 播放状态
   ttsAudioQueue: [],
   isPlaying: false,
-  audioContext: null,
 
   // 对话状态
   isProcessing: false,
@@ -101,6 +102,7 @@ const elements = {
   volcAccessKey: document.getElementById('settings-volc-access-key'),
   volcApiKey: document.getElementById('settings-volc-api-key'),
   volcTtsVoice: document.getElementById('settings-volc-tts-voice'),
+  asrProvider: document.getElementById('settings-asr-provider'),
   recordShortcut: document.getElementById('settings-record-shortcut')
 };
 
@@ -230,6 +232,59 @@ function shouldUseSilenceAutoSubmit() {
   return state.recordingMode !== 'hold';
 }
 
+function getSpeechRecognitionConstructor() {
+  return window.SpeechRecognition || window.webkitSpeechRecognition;
+}
+
+function isLocalAsrSupported() {
+  return Boolean(getSpeechRecognitionConstructor());
+}
+
+async function shouldProcessAsrLocally() {
+  const SpeechRecognition = getSpeechRecognitionConstructor();
+  if (!SpeechRecognition?.available || !SpeechRecognition?.install) {
+    return false;
+  }
+
+  try {
+    const availability = await SpeechRecognition.available({ langs: ['zh-CN'], processLocally: true });
+    if (availability === 'unavailable') {
+      return false;
+    }
+
+    if (availability === 'downloadable' || availability === 'downloading') {
+      updateStatus('安装本机 ASR 中文模型...');
+      return await SpeechRecognition.install({ langs: ['zh-CN'], processLocally: true });
+    }
+
+    return true;
+  } catch (error) {
+    console.warn('[Local ASR] 离线模型检查失败，改用浏览器内置识别:', error);
+    return false;
+  }
+}
+
+async function ensureLocalAsrReady() {
+  if (!isLocalAsrSupported()) {
+    throw new Error('当前浏览器不支持浏览器内置 ASR，请使用 Chrome/Edge 或切回豆包云端 ASR');
+  }
+}
+
+function stopLocalRecognition() {
+  if (state.localRecognition) {
+    const recognition = state.localRecognition;
+    state.localRecognition = null;
+    recognition.onresult = null;
+    recognition.onerror = null;
+    recognition.onend = null;
+    try {
+      recognition.stop();
+    } catch (error) {
+      console.warn('[Local ASR] 停止失败:', error);
+    }
+  }
+}
+
 function setRecordingMode(mode) {
   state.recordingMode = mode;
 }
@@ -253,6 +308,10 @@ function cleanupRecordingResources({ closeClient = true } = {}) {
   if (state.mediaStream) {
     state.mediaStream.getTracks().forEach(track => track.stop());
     state.mediaStream = null;
+  }
+
+  if (closeClient) {
+    stopLocalRecognition();
   }
 
   if (closeClient && state.asrClient) {
@@ -350,6 +409,8 @@ async function loadConfig() {
   elements.volcAccessKey.value = state.config.volcAccessKey || '';
   elements.volcApiKey.value = state.config.volcApiKey || '';
   elements.volcTtsVoice.value = state.config.volcTtsVoice || 'zh_female_vv_uranus_bigtts';
+  state.config.asrProvider = state.config.asrProvider === 'local' ? 'local' : 'doubao';
+  elements.asrProvider.value = state.config.asrProvider;
   state.config.recordShortcut = normalizeShortcutKey(state.config.recordShortcut || 'F6');
   elements.recordShortcut.value = state.config.recordShortcut;
 
@@ -374,6 +435,7 @@ async function saveConfig() {
       volcResourceId: state.config.volcResourceId,
       volcTtsResourceId: state.config.volcTtsResourceId,
       volcTtsVoice: elements.volcTtsVoice.value,
+      asrProvider: elements.asrProvider.value === 'local' ? 'local' : 'doubao',
       recordShortcut: normalizeShortcutKey(elements.recordShortcut.value || state.config.recordShortcut || 'F6')
       // volcProxyUrl 不保存到 localStorage，始终由运行时动态计算
     };
@@ -382,6 +444,7 @@ async function saveConfig() {
     localStorage.setItem('doubao_app_config', JSON.stringify(config));
 
     state.config = { ...state.config, ...config };
+    elements.asrProvider.value = state.config.asrProvider;
     elements.recordShortcut.value = state.config.recordShortcut;
     console.log('[Config] 已保存到 LocalStorage:', config);
 
@@ -426,6 +489,7 @@ function readSettingsFormConfig() {
     volcResourceId: state.config.volcResourceId,
     volcTtsResourceId: state.config.volcTtsResourceId,
     volcTtsVoice: elements.volcTtsVoice.value,
+    asrProvider: elements.asrProvider.value === 'local' ? 'local' : 'doubao',
     volcProxyUrl: state.config.volcProxyUrl || getDefaultProxyUrl()
   };
 }
@@ -475,6 +539,13 @@ async function testQwenConfig() {
 async function testAsrConfig() {
   await withTestButton(elements.settingsTestAsr, '测试中...', async () => {
     const config = readSettingsFormConfig();
+
+    if (config.asrProvider === 'local') {
+      await ensureLocalAsrReady();
+      setSettingsStatus('浏览器内置 ASR 可用');
+      return;
+    }
+
     if (!config.volcAppKey || !config.volcAccessKey) {
       throw new Error('请先填写 ASR App Key 和 Access Key');
     }
@@ -550,19 +621,24 @@ async function startRecording(mode = 'button') {
 
   console.log('[Recording] 检查配置:', state.config);
 
-  if (!state.config.volcAppKey || !state.config.volcAccessKey) {
-    setRecordingPhase('idle');
-    setRecordingMode(null);
-    updateStatus('错误：请先配置豆包 ASR 鉴权');
-    appendMessage('system', '请在设置中配置豆包 ASR 的 App Key 和 Access Key');
-    return;
-  }
-
   if (!state.config.qwenApiKey) {
     setRecordingPhase('idle');
     setRecordingMode(null);
     updateStatus('错误：请先配置 Qwen API Key');
     appendMessage('system', '请先在设置中配置 Qwen API Key');
+    return;
+  }
+
+  if (state.config.asrProvider === 'local') {
+    await startLocalAsrRecording(requestId);
+    return;
+  }
+
+  if (!state.config.volcAppKey || !state.config.volcAccessKey) {
+    setRecordingPhase('idle');
+    setRecordingMode(null);
+    updateStatus('错误：请先配置豆包 ASR 鉴权');
+    appendMessage('system', '请在设置中配置豆包 ASR 的 App Key 和 Access Key');
     return;
   }
 
@@ -694,7 +770,7 @@ async function startRecording(mode = 'button') {
 }
 
 function stopRecording() {
-  if (!state.isRecording && !state.asrClient && !state.mediaStream && !state.audioContext && !state.scriptProcessor && state.recordingPhase !== 'starting') {
+  if (!state.isRecording && !state.asrClient && !state.mediaStream && !state.audioContext && !state.scriptProcessor && !state.localRecognition && state.recordingPhase !== 'starting') {
     return;
   }
 
@@ -703,8 +779,20 @@ function stopRecording() {
   clearShortcutHoldTimer();
   state.isRecording = false;
   setRecordingPhase('finalizing');
-  state.isAwaitingFinalAsr = Boolean(state.asrClient?.isConnected);
+  state.isAwaitingFinalAsr = Boolean(state.asrClient?.isConnected || state.localRecognition);
   updateStatus(state.isAwaitingFinalAsr || state.isProcessing ? '处理中...' : '就绪');
+
+  if (state.localRecognition) {
+    try {
+      state.localRecognition.stop();
+    } catch (error) {
+      console.warn('[Local ASR] 停止失败:', error);
+    }
+  }
+
+  if (state.config.asrProvider === 'local') {
+    pendingAsrFinalText = pendingAsrFinalText || lastDefiniteText || currentRealtimeText;
+  }
 
   if (state.asrClient?.isConnected) {
     state.asrClient.sendEndRequest();
@@ -714,10 +802,119 @@ function stopRecording() {
   elements.startBtn.disabled = false;
   elements.stopBtn.disabled = true;
 
-  if (!state.asrClient) {
+  if (!state.asrClient && !state.localRecognition) {
     state.isAwaitingFinalAsr = false;
     setRecordingPhase('idle');
     setRecordingMode(null);
+  }
+}
+
+async function startLocalAsrRecording(requestId) {
+  const SpeechRecognition = getSpeechRecognitionConstructor();
+
+  updateStatus('启动本机 ASR...');
+
+  try {
+    await ensureLocalAsrReady();
+    if (!isStartRequestActive(requestId)) {
+      return;
+    }
+
+    const processLocally = await shouldProcessAsrLocally();
+    if (!processLocally) {
+      setSettingsStatus('离线中文模型不可用，已改用浏览器内置识别');
+    }
+
+    const recognition = new SpeechRecognition();
+    state.localRecognition = recognition;
+    recognition.lang = 'zh-CN';
+    if ('processLocally' in recognition) {
+      recognition.processLocally = processLocally;
+    }
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.maxAlternatives = 1;
+
+    let recognitionFailed = false;
+
+    recognition.onresult = (event) => {
+      let finalText = '';
+      let interimText = '';
+
+      for (let i = 0; i < event.results.length; i++) {
+        const result = event.results[i];
+        const transcript = result[0]?.transcript || '';
+        if (result.isFinal) {
+          finalText += transcript;
+        } else {
+          interimText += transcript;
+        }
+      }
+
+      handleAsrText({ text: finalText + interimText, is_definite: Boolean(finalText && !interimText) });
+    };
+
+    recognition.onerror = (event) => {
+      recognitionFailed = true;
+      console.error('[Local ASR] 错误:', event.error);
+      resetShortcutPress();
+      state.isAwaitingFinalAsr = false;
+      state.isRecording = false;
+      state.localRecognition = null;
+      setRecordingPhase('idle');
+      setRecordingMode(null);
+      elements.startBtn.disabled = false;
+      elements.stopBtn.disabled = true;
+      updateStatus('本机 ASR 错误');
+      appendMessage('system', `本机 ASR 失败：${event.error || '未知错误'}`);
+    };
+
+    recognition.onend = async () => {
+      console.log('[Local ASR] 识别结束');
+      if (state.localRecognition === recognition) {
+        state.localRecognition = null;
+      }
+      clearSilenceTimer();
+      state.isRecording = false;
+      state.isAwaitingFinalAsr = false;
+      setRecordingPhase('idle');
+      setRecordingMode(null);
+      elements.startBtn.disabled = false;
+      elements.stopBtn.disabled = true;
+      if (recognitionFailed) {
+        return;
+      }
+      const submitted = await submitPendingAsrText();
+      if (!submitted && !state.isProcessing) {
+        updateStatus('就绪');
+      }
+    };
+
+    recognition.start();
+    if (!isStartRequestActive(requestId)) {
+      stopLocalRecognition();
+      return;
+    }
+
+    setRecordingPhase('recording');
+    updateStatus('正在本机识别...');
+    state.isRecording = true;
+    elements.startBtn.disabled = true;
+    elements.stopBtn.disabled = false;
+    armSilenceTimer({ requireText: false });
+  } catch (error) {
+    console.error('[Local ASR] 启动失败:', error);
+    if (!isStartRequestActive(requestId)) {
+      stopLocalRecognition();
+      return;
+    }
+
+    state.localRecognition = null;
+    setRecordingPhase('idle');
+    setRecordingMode(null);
+    resetShortcutPress();
+    updateStatus('错误：' + error.message);
+    appendMessage('system', '本机 ASR 启动失败：' + error.message);
   }
 }
 
@@ -727,6 +924,7 @@ function stopCurrentOutput() {
   state.isSpeaking = false;
   state.isProcessing = false;
   state.isAwaitingFinalAsr = false;
+  stopLocalRecognition();
   state.currentAssistantMessage = null;
   currentRealtimeText = '';
   lastDefiniteText = '';
@@ -762,8 +960,12 @@ function clearSilenceTimer() {
   }
 }
 
-function armSilenceTimer() {
-  if (!state.isRecording || state.isProcessing || !currentRealtimeText.trim() || !shouldUseSilenceAutoSubmit()) {
+function armSilenceTimer({ requireText = true } = {}) {
+  if (!state.isRecording || state.isProcessing || !shouldUseSilenceAutoSubmit()) {
+    return;
+  }
+
+  if (requireText && !currentRealtimeText.trim()) {
     return;
   }
 
@@ -778,16 +980,20 @@ function armSilenceTimer() {
       return;
     }
 
-    await finalizeRecordingFromSilence();
+    await finalizeRecordingFromSilence({ allowEmpty: !requireText });
   }, SILENCE_AUTO_SUBMIT_MS);
 }
 
-async function finalizeRecordingFromSilence() {
-  if (!state.isRecording || state.isProcessing || !currentRealtimeText.trim() || !shouldUseSilenceAutoSubmit()) {
+async function finalizeRecordingFromSilence({ allowEmpty = false } = {}) {
+  if (!state.isRecording || state.isProcessing || !shouldUseSilenceAutoSubmit()) {
     return false;
   }
 
-  updateStatus('处理中...');
+  if (!allowEmpty && !currentRealtimeText.trim()) {
+    return false;
+  }
+
+  updateStatus(currentRealtimeText.trim() ? '处理中...' : '未检测到语音，已停止');
   stopRecording();
   return true;
 }
@@ -810,11 +1016,6 @@ async function submitPendingAsrText() {
 }
 
 async function handleAsrText(data) {
-  // data 结构可能为：
-  // { result: { text: "..." }, is_final: true/false }
-  // 或 { text: "...", is_definite: true }
-  // 注意：result.text 是累积文本（包含本次会话所有已识别文字）
-
   const text = data.result?.text || data.text || '';
   const isFinal = data.is_final || data.is_definite || false;
 
@@ -1372,6 +1573,10 @@ function bindEvents() {
     }
 
     stopShortcutCapture({ restore: true });
+  });
+
+  elements.asrProvider.addEventListener('change', (e) => {
+    state.config.asrProvider = e.target.value === 'local' ? 'local' : 'doubao';
   });
 
   // 开始录音

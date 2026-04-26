@@ -47,7 +47,14 @@
 
         <div class="settings-section">
           <h2>豆包设置</h2>
-          <p class="settings-note">ASR 使用 X-Api-App-Key、X-Api-Access-Key 与 X-Api-Resource-Id</p>
+          <p class="settings-note">ASR 可使用豆包云端或浏览器内置语音识别；TTS 仍使用豆包。</p>
+          <label class="input-group">
+            <span>ASR 来源</span>
+            <select id="settings-asr-provider">
+              <option value="doubao">豆包云端 ASR</option>
+              <option value="local">浏览器内置 ASR</option>
+            </select>
+          </label>
           <label class="input-group">
             <span>App Key</span>
             <input id="settings-volc-app-key" type="password" autocomplete="off">
